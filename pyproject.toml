@@ -16,6 +16,7 @@ dependencies = [
 fetch-de-prices = "spot_price_forecast.data_fetch.fetch_de_prices:main"
 fetch-neighbor-prices = "spot_price_forecast.data_fetch.fetch_neighbor_prices:main"
 fetch-forecasts = "spot_price_forecast.data_fetch.fetch_forecasts:main"
+build-processed = "spot_price_forecast.data_prep.pipeline:main"
 
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]

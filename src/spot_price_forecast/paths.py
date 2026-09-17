@@ -14,3 +14,7 @@ PROCESSED_DATA_PATH = DATA_DIR / "processed_data.parquet"
 TRAINING_DATA_PATH = PROCESSED_DATA_DIR / "training_data.parquet"
 VALIDATION_DATA_PATH = PROCESSED_DATA_DIR / "validation_data.parquet"
 TESTING_DATA_PATH = PROCESSED_DATA_DIR / "testing_data.parquet"
+
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
