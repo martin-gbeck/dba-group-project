@@ -1,0 +1,22 @@
+[project]
+name = "spot-price-forecast"
+version = "0.1.0"
+description = "DBA3803: forecasting the German day-ahead spot price to schedule industrial electricity purchases"
+readme = "project.md"
+authors = [
+    { name = "martin-gbeck", email = "martingribsholt@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pandera>=0.33.1",
+    "polars>=1.44.2",
+]
+
+[project.scripts]
+fetch-de-prices = "spot_price_forecast.data_fetch.fetch_de_prices:main"
+fetch-neighbor-prices = "spot_price_forecast.data_fetch.fetch_neighbor_prices:main"
+fetch-forecasts = "spot_price_forecast.data_fetch.fetch_forecasts:main"
+
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13.0"]
+build-backend = "uv_build"
