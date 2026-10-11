@@ -75,22 +75,13 @@ neighbors_raw = fetch_neighbor_prices()
 # %% [markdown]
 # ## 2. Parse and join
 #
-# Mechanical fixes only, the same for every file and none of them learned from the data:
+# Mechanical fixes only, the same for every file:
 #
-# 1. Every file is averaged to UTC hours. Prices and neighbour prices are hourly until the
-#    market-time-unit change on 2025-10-01 and quarter-hourly after; the forecasts are
-#    quarter-hourly throughout. The hourly mean is the hour's average price, and for the
-#    forecasts the hour's average power. It also repairs Switzerland, which still publishes hourly:
-#    three of its four quarter-hour rows are empty, and the mean skips them.
-# 2. The files are joined on `utc_timestamp`, starting from the price table, so every row has a target.
-#    Forecast hours past the last cleared auction drop out here.
-# 3. German local time and the calendar columns come from the UTC timestamp. Hour of day is
-#    local because demand follows the clock people live by.
-# 4. `fc_residual` is load minus the three renewable forecasts, as defined in `project.md`. It is
-#    arithmetic on one row and safe before the split.
-# 5. The merged table is validated against the data model in `data_schemas.py`. It casts every
-#    column to its type, drops any column the model does not list, and checks the hourly grid,
-#    the price limits and which columns may be empty. Open that file to see what the table holds.
+# 1. Every file is averaged to UTC hours. Prices go quarter-hourly on 2025-10-01 and the forecasts are quarter-hourly throughout, so the mean puts all three on one grid. It also fills Switzerland, which stays hourly and leaves three of every four quarter-hours empty.
+# 2. The join starts from the price table, so every row has a target.
+# 3. Calendar columns are in German local time, because demand follows the local clock.
+# 4. `fc_residual` is load minus solar and wind, as defined in `project.md`.
+# 5. The result is validated against the data model in `data_schemas.py`. Read that file for what the table holds.
 
 # %% [markdown]
 # Average every file to UTC hours.
@@ -140,14 +131,12 @@ df = CombinedDataSchema.validate(merged)
 df.head(3)
 
 # %% [markdown]
-# The merged table passes the data model: one row per hour with no gaps or repeats, every price inside the auction limits, no negative generation forecast, residual load equal to its formula, and empty values only in the neighbour prices, where the model allows them. The averaging has to come before the join. Joined at the raw resolution, three in four forecast rows before October 2025 would have met no price.
+# The averaging has to come before the join: at raw resolution, three in four forecast rows before October 2025 would have no price to join to.
 
 # %% [markdown]
 # ## 3. Split
 #
-# Chronological, by German delivery date: train 2019 to 2023, validation 2024, test from
-# 2025-01-01. **Everything below explores train only.** Validation is for choosing hyperparameters
-# and test is scored once at the end.
+# Chronological by delivery date. Everything from here explores train only; validation picks hyperparameters and test is scored once at the end.
 
 # %% [markdown]
 # Split by year into train, validation and test, and show the size and dates of each.
@@ -170,15 +159,14 @@ pl.concat(
 )
 
 # %% [markdown]
-# Train spans three different markets, from the calm years of 2019 and 2020 through the gas crisis of 2021 and 2022 to the recovery in 2023. Validation and test both come after the crisis, so whatever the model learns from crisis prices has to carry over to calmer ones. Test runs to 2026-10-11, 15,575 hours as of this pull, and it is the only set that contains the switch to quarter-hour auctions.
+# Train covers three markets: calm (2019 to 2020), the gas crisis (2021 to 2022) and the recovery (2023). Validation and test both come after the crisis, and only test contains quarter-hour auctions.
 
 # %% [markdown]
 # ## 4. Exploration
 #
 # ### 4.1 Dataset structure
 #
-# Gaps, duplicates and value limits are already enforced by the data model. What is left here
-# describes the structure rather than tests it.
+# The data model already tests gaps, duplicates and limits. These cells only describe the structure.
 
 # %% [markdown]
 # Summarise each raw file: rows, date range, duplicate timestamps and where quarter-hour data starts.
@@ -241,26 +229,19 @@ df.null_count().unpivot(variable_name="column", value_name="null_hours").filter(
 )
 
 # %% [markdown]
-# No raw file has a duplicate timestamp. The clock changes land where they should, as eight 23-hour and seven 25-hour German days, which means the 24-hour forecast vector is 23 or 25 long on those days, as `project.md` warns.
-#
-# Quarter-hour prices start at 00:15 German time on 2025-10-01, inside the test period, so train and validation never see them.
-#
-# The -500 EUR/MWh floor was hit in one hour in the five train years and needs no special handling. `project.md` expects forecast hours past the last cleared price, and the 2026-10-11 pull has none, because both series end on the same delivery day. The check stays in for the next pull.
-#
-# Only one gap remains: the Dutch price for all 24 hours of 2026-10-10, the day before the pull and inside test. Most likely it is not yet published, and a refresh before modelling should fill it. The gap only matters if neighbour prices survive as features.
+# Nothing here needs fixing. On the 23- and 25-hour clock-change days the forecast vector is 23 or 25 long, not 24. The -500 floor was hit once in train and needs no special handling. Only the Dutch price for 2026-10-10 is missing, most likely not yet published, so refresh before modelling.
 
 # %% [markdown]
-# **What is knowable at 11:55 on D-1** decides which columns can ever be features. From
-# `project.md`, checked against the columns that actually exist:
+# Which columns can be features at 11:55 on D-1, from `project.md`:
 #
 # | Column | Day D value usable? | Why |
 # |---|---|---|
 # | `price_da` | no, it is the target | D-1 and earlier are settled, so lags of 24h and more are legal |
-# | `fc_load`, `fc_solar`, `fc_wind_*`, `fc_residual` | yes, with a caveat | Forecasts for D. Computed 08:00 D-1, published 18:00 D-1, so a vendor forecast stands in for them in practice |
-# | `price_FR` ... `price_NO2` | **no** | Coupled zones clear in the same auction as DE-LU. Lag 24h or more only |
+# | `fc_load`, `fc_solar`, `fc_wind_*`, `fc_residual` | yes, with a caveat | Computed 08:00 D-1 but published 18:00 D-1, so in practice a vendor forecast stands in |
+# | `price_FR` ... `price_NO2` | **no** | They clear in the same auction as DE-LU. Lag 24h or more only |
 # | calendar | yes | Known in advance |
 #
-# No actuals are in the data at all, which removes the most common leak in this problem.
+# The data holds no actuals, which removes the most common leak in this problem.
 
 # %% [markdown]
 # ### 4.2 The yearly mean price moves eightfold
@@ -300,16 +281,12 @@ naive_168 = pl.col("price_da").diff(168).abs()
 )
 
 # %% [markdown]
-# From 30 EUR/MWh in 2020 the yearly mean rose to 235 in 2022, with single days near 700, and fell back to 95 in 2023. The naive error moves with it, from 9 EUR/MWh in 2019 to 58 in 2022, yet as a share of the mean price it stays between 0.25 and 0.33 every year.
-#
-# Raw MAE therefore cannot compare a CV fold that contains 2022 with a calmer test year, which is why MASE is in the objective. Nothing in the data measures the fuel cost behind the level either. The model has to read the level off recent prices: same-hour lags, yesterday's mean and a longer moving average.
+# The naive error grows with the price level, but as a share of the mean it holds at 0.25 to 0.33 every year. MAE alone cannot compare a CV fold that contains 2022 with a calm test year, which is why MASE goes beside it. No column measures fuel cost, so the level has to come from recent prices: lags, yesterday's mean and a longer moving average.
 
 # %% [markdown]
 # ### 4.3 The decision only depends on the shape of the day
 #
-# The company buys a fixed volume and only chooses **which hours**. Shifting all 24 prices of a day
-# up or down changes nothing it does. So the variance that matters is the variance *within* a day,
-# around that day's mean.
+# The company only chooses which hours to buy, so moving a whole day's prices up or down changes nothing it does. What matters is the variance within a day.
 
 # %% [markdown]
 # Split each year's price variance into the part between days and the part within a day.
@@ -358,9 +335,9 @@ profile = (
 )
 
 # %% [markdown]
-# In 2021 and 2022 only 17 to 19% of the price variance sits inside the day. The rest is the level moving from day to day, and the level does not change which hours the company buys. A model trained to minimise error over all hours will spend most of its effort on the part the decision ignores. The evaluation needs a measure of the shape on its own, either the euro cost of the schedule or the error left after removing each day's mean from both the forecast and the actual price.
+# In the crisis years only 17 to 19% of the variance sits within the day, the part the decision uses. A model that minimises error over all hours spends most of its effort on the level, so the evaluation needs a shape measure: the euro cost of the schedule, or the error left after removing each day's mean.
 #
-# Inside train, the shape itself changed. In 2019 the day was nearly flat, never more than 12 EUR/MWh from its mean. By 2023 the midday trough at 13:00 to 14:00 sat 26 EUR/MWh below the day's mean, deeper than the night, which is solar pushing midday prices down. The cheapest hours moved from 03:00 to the middle of the day, which leaves a fixed hour-of-day effect learned on 2019 pointing at the wrong hours by 2023. Solar and residual load forecasts are what carry the shift.
+# The shape moved as well. By 2023 solar had pushed the cheapest hours from 03:00 to 13:00 to 14:00, so an hour-of-day effect learned on early years points at the wrong hours. The solar and residual-load forecasts have to carry that shift.
 
 # %% [markdown]
 # ### 4.4 Residual load sets the shape, and its slope moves with the price level
@@ -449,9 +426,7 @@ train.select(
 )
 
 # %% [markdown]
-# Residual load is the only forecast with a clean rising line in every year. Within a day it correlates 0.76 to 0.85 with the price in each train year, against 0.15 to 0.29 for any single component, which makes it the one fundamental that matters for the shape.
-#
-# Its slope is the problem. One more GW of residual load added 1.1 EUR/MWh to the price in 2019 and 7.1 in 2022, and 3.1 in 2023. The slope rises and falls with the price level, which points at fuel cost, the one driver missing from the data. Pooled over all five years the correlation drops to 0.39 for the same reason. A linear model with a single coefficient on residual load gets the slope wrong in most years and needs residual load times a recent price level as an interaction. Trees find that interaction on their own. The 2021 line also bends sharply upward above about 52 GW, a scarcity cliff a straight line cannot follow.
+# Residual load is the forecast that drives the shape: 0.76 to 0.85 within-day correlation in every year, against at most 0.29 for any single component. Its slope moves with the price level, 1.1 EUR/MWh per GW in 2019 against 7.1 in 2022, which is why the pooled correlation falls to 0.39. A linear model needs residual load times a recent price level; trees find that on their own. The 2021 line also bends upward above about 52 GW, a scarcity cliff no straight line follows.
 
 # %% [markdown]
 # ### 4.5 Price memory
@@ -487,16 +462,12 @@ autocorrelation = pl.DataFrame(
 )
 
 # %% [markdown]
-# Correlation peaks every 24 hours, with extra bumps at 168 and 336 from the weekly cycle. Same hour yesterday reaches 0.90, two days back 0.84 and the same hour last week 0.83. Lag 1 is higher at 0.99, but `project.md` keeps lags same-hour, and it stays out.
-#
-# Two days back and last week carry about the same correlation, and lag 168 is the one worth keeping, because it lines a Monday up with the previous Monday instead of with Sunday. The naive lag-24 forecast also beat lag 168 in every train year (table in 4.2), which makes lag 24 the baseline to beat.
+# Same hour yesterday (0.90) is the strongest lag, and it beat same hour last week as a forecast in every train year, so it is the baseline. Lag 1 is higher but stays out under `project.md`'s same-hour rule. Of the rest, lag 168 is worth keeping over lag 48 because it lines Monday up with Monday rather than with Sunday.
 
 # %% [markdown]
 # ### 4.6 Neighbouring zones
 #
-# Three numbers per zone. **Same hour** is a leak and is shown only to measure how tightly the zones
-# are coupled. **Lag 24** is the legal version. **Spread** asks whether yesterday's gap between the
-# zone and Germany predicts how much the German price changes today.
+# Same hour is a leak, shown only to measure coupling. Lag 24 is the legal version. Spread asks whether yesterday's gap between a zone and Germany predicts today's German change.
 
 # %% [markdown]
 # Per zone: how its price relates to Germany's, at the same hour, a day back, and as a spread.
@@ -562,11 +533,9 @@ coupling = (
 )
 
 # %% [markdown]
-# Same-hour coupling is tight: 0.97 to 0.98 for the Czech Republic, Austria, the Netherlands, Belgium and DK1. That is why a same-hour neighbour price would be such a damaging leak. Lagged a day, no neighbour beats Germany's own lag 24 (0.903). The best are the Czech Republic at 0.906 and Belgium at 0.904, so as plain lags the neighbours add almost nothing.
+# Same-hour coupling reaches 0.98, which is what would make a same-hour neighbour price such a damaging leak. Lagged a day, no zone beats Germany's own lag 24, so plain neighbour lags add nothing.
 #
-# Spreads are the open question. When a neighbour was dearer than Germany yesterday, the German price tends to rise today, at 0.31 for Switzerland and 0.28 to 0.30 for the Netherlands and southern Norway (NO2). That may only be Germany recovering after an unusually cheap day, which its own price history already shows. A 15-minute check settles it, and it is listed at the checkpoint.
-#
-# For linear models, the central-western zones correlate 0.94 to 0.98 with each other and behave like one variable repeated six times.
+# The spread is the open question: it predicts today's German change at up to 0.31 (Switzerland), but that may just be Germany reverting after a cheap day, which its own history already captures. A 15-minute check at the checkpoint settles it. For a linear model the central-western zones, at 0.94 to 0.98 with each other, are one variable repeated six times.
 
 # %% [markdown]
 # ### 4.7 Negative prices
@@ -603,9 +572,7 @@ train.group_by("year").agg(
 ).sort("year")
 
 # %% [markdown]
-# 1,018 train hours cleared below zero, 2.3% of the total, in two clusters: midday from 12:00 to 15:00, which is solar, and the night from 01:00 to 04:00, which is wind meeting low demand. The crisis pushed the count down to 69 in 2022, and it was back to 301 in 2023.
-#
-# These are the hours where getting the ranking right pays most, because the company is paid to take the power. A log transform is off the table, since it cannot take a negative price. asinh is the option if diagnostics later show the error growing with the level. The single -500 hour stays in as a genuine auction outcome.
+# Negative hours cluster at midday, which is solar, and at night, which is wind meeting low demand. They are where ranking pays most, because the company is paid to take the power. A log transform cannot handle them; asinh can, if diagnostics later ask for a transform.
 
 # %% [markdown]
 # ### 4.8 Calendar
@@ -632,9 +599,7 @@ train.group_by("year").agg(
 )
 
 # %% [markdown]
-# Sunday averages 27 EUR/MWh below its week's mean and sits below it in 89% of weeks. Saturday is 15 below, and Tuesday to Thursday 9 to 12 above. Monday is only 5 above, likely because its first hours still follow the quiet Sunday night.
-#
-# Weekday dummies will pick this up. Public holidays will not: a holiday on a Wednesday looks like a Sunday to the market and like a Wednesday to the calendar. Holidays are not in the data, which makes them a side exploration.
+# Weekends lower the level: Sunday sits 27 EUR/MWh below its week and below it in 89% of weeks. Weekday dummies cover that. Public holidays are not in the data and would look like ordinary weekdays to the model, which makes them a side exploration.
 
 # %% [markdown]
 # ### 4.9 Collinearity among the forecasts
@@ -648,50 +613,50 @@ train.select(FORECASTS).corr().with_columns(forecast=pl.Series(FORECASTS)).selec
 )
 
 # %% [markdown]
-# Pairwise, only onshore and offshore wind move together (0.71). The bigger issue does not show in a correlation table. `fc_residual` is load minus the other three exactly, which makes the five columns perfectly collinear: OLS cannot estimate all five at once, and Lasso picks between them arbitrarily. Linear models get residual load plus at most solar, which carries the time-of-day shift. Trees can take all five.
+# Only the two wind forecasts correlate (0.71), but `fc_residual` is an exact combination of the other four, so OLS cannot fit all five. Linear models take residual load and solar; trees can take all five.
 
 # %% [markdown]
 # ## 5. Checkpoint
 #
-# Phase 1 stops here. Cleaning, features and models wait for a go-ahead and any edits to the lists below.
+# Phase 1 stops here. Cleaning, features and models wait for a go-ahead.
 #
 # ### Discoveries, ranked by how much they should change the model
 #
-# 1. The decision only uses the shape of the day, and in 2021 and 2022 over 80% of the price variance is the level. Evaluate the shape on its own, through the euro cost of the schedule and the error left after removing each day's mean, next to MAE and RMSE.
-# 2. Residual load drives the shape, at a within-day correlation of 0.76 to 0.85 in every train year, but its slope went from 1.1 to 7.1 EUR/MWh per GW between 2019 and 2022. Linear models need residual load times a recent price level.
-# 3. Yearly mean prices moved eightfold, and nothing in the data measures fuel cost. The level has to come from price memory: lags of 24, 48 and 168 hours, yesterday's mean and a 30-day mean. MASE goes next to MAE so years at different levels compare.
-# 4. The shape of the day changed inside train. As solar grew, the cheapest hours moved from 03:00 to 13:00, and hour-of-day effects learned on the early years go stale. Solar forecasts or per-hour models have to carry the shift.
-# 5. Same hour yesterday is the strongest single predictor at 0.90 and beat same hour last week in every train year. It is the baseline.
-# 6. Weekends shift the level: Sunday sits 27 EUR/MWh and Saturday 15 below the week's mean. Weekday dummies cover it. Holidays are missing.
-# 7. Residual load is an exact combination of the other four forecasts. Linear models take residual load and solar, not all five.
-# 8. Neighbour prices add nothing as plain lags, with the best at 0.906 against Germany's own 0.903. Only the spread might, and that is unproven.
-# 9. 2.3% of train hours are negative, clustered at midday and at night. No log transform, and asinh if one is needed.
+# 1. The decision only uses the shape of the day, and in 2021 and 2022 over 80% of the variance is the level. Score the shape on its own (euro cost of the schedule, error after removing the daily mean) next to MAE and RMSE.
+# 2. Residual load drives the shape, but its slope went from 1.1 to 7.1 EUR/MWh per GW. Linear models need residual load times a recent price level.
+# 3. The yearly mean moved eightfold and no column measures fuel cost. Price lags (24, 48, 168 hours), yesterday's mean and a 30-day mean have to carry it, with MASE beside MAE.
+# 4. Solar moved the cheapest hours from 03:00 to 13:00 inside train, so fixed hour effects go stale. The solar forecast or per-hour models carry the shift.
+# 5. Same hour yesterday is the baseline: strongest lag at 0.90, and it beat same hour last week every year.
+# 6. Weekends lower the level by 15 to 27 EUR/MWh. Weekday dummies cover it; holidays are missing.
+# 7. Residual load is an exact combination of the other four forecasts. Linear models take residual load and solar.
+# 8. Neighbour prices add nothing as plain lags. Only the spread might, unproven.
+# 9. 2.3% of train hours are negative, so no log transform; asinh if one is needed.
 #
 # ### Proposed cleaning
 #
-# 1. Drop the first 30 days of train, which have no 30-day mean and no lag 168 yet.
-# 2. Refresh the neighbour file before modelling to fill the missing Dutch day. If it is still empty and neighbours stay in, forward-fill from the last published hour, which only looks backwards.
-# 3. Keep every extreme. The -500 hour and the 2022 spikes are auction results, not errors.
-# 4. No target transform for now. asinh is the candidate if the diagnostics show error growing with the price level.
-# 5. Keep the hourly mean of the four quarter-hour prices as the target after 2025-10-01, so train and test predict the same thing.
+# 1. Drop the first 30 days of train, which lack a 30-day mean and lag 168.
+# 2. Refresh the neighbour file to fill the missing Dutch day; if still empty and neighbours stay in, forward-fill.
+# 3. Keep every extreme. The -500 hour and the 2022 spikes are auction results.
+# 4. No target transform for now; asinh if diagnostics show error growing with the level.
+# 5. Keep the hourly mean of the four quarter-hour prices as the target after 2025-10-01.
 #
 # ### Worth exploring, not core
 #
-# 1. Model the level and the shape separately, about an hour. Predict the daily mean, then the 24 deviations from it. The decision only needs the second part, which is also the more stable one (discoveries 1 and 4).
-# 2. Test the neighbour spread against Germany's own recovery, 15 minutes. If Switzerland's 0.31 disappears once Germany's distance from its 7-day mean is in the model, the 11 neighbour columns and their 25-minute pull can go.
-# 3. Add a gas price, half a day to find a free daily TTF series. It would replace the 30-day-mean stand-in for the level and explain the moving slope, which likely makes it the biggest single gain in MAE, but it does nothing for the shape.
-# 4. Flag German public holidays, 20 minutes with the `holidays` package. About ten weekdays a year behave like Sundays and the weekday dummies get them wrong.
+# 1. Separate level and shape models, about an hour: predict the daily mean, then the 24 deviations. The decision needs only the second, which is also the more stable.
+# 2. Neighbour spread against Germany's own reversion, 15 minutes. If it adds nothing, the neighbour columns and their 25-minute pull go.
+# 3. A gas price series, half a day to source. Likely the biggest MAE gain, but no help with the shape.
+# 4. German public holidays, 20 minutes with the `holidays` package. About ten weekdays a year price like Sundays.
 #
 # ### Model shortlist
 #
-# | Model | Why it fits these findings | Needs from features | What a win or a loss tells us |
+# | Model | Why it fits | Needs from features | A win or loss tells us |
 # |---|---|---|---|
-# | Same hour yesterday | Strongest single predictor at 0.90 | Nothing | The bar. A model that loses to it has no story |
+# | Same hour yesterday | Strongest lag | Nothing | The bar to beat |
 # | Training-set mean | Required by `project.md` | Nothing | The floor |
-# | Lasso | Reads the level off lags, so it can predict above the range it trained on. Picks among correlated lags. The standard benchmark in price forecasting (LEAR) | Scaling, residual load times level, hour and weekday dummies, no exactly collinear set | A win says the shape is mostly linear once the slope can move |
-# | Gradient boosting (LightGBM or XGBoost) | Fits the moving slope and the 52 GW cliff without hand-built interactions | Lags for the level, since trees cannot predict outside the range they saw | A win says the interactions matter more than we can build by hand. A loss says the level problem dominates |
-# | Lasso, then boosting on its errors | The level from the linear part, the bends from the trees | Both of the above | A win means the two failure modes are separate and can be split |
-# | Random forest | Covers the course's tree family | As boosting | Mostly a comparison point for boosting |
-# | Small neural net (MLP) | Covers the course's neural-net family | Scaling | Least likely to win on 44,000 rows that span a regime change |
+# | Lasso | Reads the level off lags, so it extrapolates; standard price-forecasting benchmark (LEAR) | Scaling, residual load times level, hour and weekday dummies, no collinear set | Win: the shape is mostly linear once the slope can move |
+# | Gradient boosting | Fits the moving slope and the 52 GW cliff without hand-built interactions | Lags for the level, since trees cannot extrapolate | Win: interactions matter. Loss: the level problem dominates |
+# | Lasso, then boosting on its errors | Level from the linear part, bends from the trees | Both | Win: the two failure modes split cleanly |
+# | Random forest | Course tree family | As boosting | A comparison point for boosting |
+# | Small MLP | Course neural-net family | Scaling | Least likely to win on 44,000 rows across a regime change |
 #
-# `project.md` also suggests 24 separate models, one per delivery hour. That is a variant of whichever model wins rather than a model of its own, and it answers discovery 4 directly.
+# Per-hour models, one per delivery hour as `project.md` suggests, are a variant of whichever model wins, and they answer discovery 4 directly.
