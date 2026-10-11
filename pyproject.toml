@@ -8,16 +8,18 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "pandera>=0.33.1",
+    "pandera[polars]>=0.34.1",
+    "plotnine>=0.15.8",
     "polars>=1.44.2",
+    "pyarrow>=26.0.0",
 ]
-
-[project.scripts]
-fetch-de-prices = "spot_price_forecast.data_fetch.fetch_de_prices:main"
-fetch-neighbor-prices = "spot_price_forecast.data_fetch.fetch_neighbor_prices:main"
-fetch-forecasts = "spot_price_forecast.data_fetch.fetch_forecasts:main"
-build-processed = "spot_price_forecast.data_prep.pipeline:main"
 
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "ruff>=0.17.0",
+]

@@ -1,13 +1,8 @@
-"""Shared plumbing for the Energy-Charts API.
+"""Plumbing for the Energy-Charts API.
 
 Source: https://api.energy-charts.info (Fraunhofer ISE). No API key, CC BY 4.0.
 Prices are relabelled from Bundesnetzagentur | SMARD.de; the load and generation
 forecasts originate with the four German TSOs.
-
-Everything an endpoint module needs lives here, so each of those is a constant, a
-`fetch` and a `main`. Data is written at whatever resolution the API returns: hourly
-until the European market-time-unit change in late 2025, 15-minute after it. Resampling
-belongs in data_prep, not here.
 """
 
 from __future__ import annotations
@@ -17,13 +12,13 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from pathlib import Path
+from datetime import date
 from typing import Any
 
 import polars as pl
 
 BASE = "https://api.energy-charts.info"
-YEARS = range(2019, 2027)
+YEARS = range(2019, date.today().year + 1)
 SLEEP_SECONDS = 6.0
 RETRIES = 5
 
@@ -62,9 +57,10 @@ def get_json(path: str) -> dict[str, Any] | None:
 
 
 def fetch_series(make_path: PathBuilder, value_key: str, column: str) -> pl.DataFrame:
-    """Pull one series across every year and stack it into utc_timestamp + column.
+    """Pull one series year by year and stack it into utc_timestamp + column.
 
-    The API will not serve eight years in one call, so this walks year by year.
+    The API will not serve eight years in one call. Neighbouring years can both return
+    the boundary timestamp, so the stack keeps the first copy of each.
     """
     frames: list[pl.DataFrame] = []
     for year in YEARS:
@@ -90,35 +86,36 @@ def fetch_series(make_path: PathBuilder, value_key: str, column: str) -> pl.Data
     return (
         pl.concat(frames, how="diagonal")
         .sort("utc_timestamp")
-        .unique(subset="utc_timestamp", keep="first")
-        .sort("utc_timestamp")
+        .unique(subset="utc_timestamp", keep="first", maintain_order=True)
     )
 
 
 def fetch_price(zone: str, column: str) -> pl.DataFrame:
-    """Day-ahead clearing price for one bidding zone, EUR/MWh.
-
-    Shared by the German and the neighbouring-zone scripts: same endpoint, same shape,
-    different `bzn`. They stay separate scripts because they produce separate datasets,
-    the German price being the target and the neighbours being predictors.
-    """
+    """Day-ahead clearing price for one bidding zone, EUR/MWh."""
     return fetch_series(
         lambda start, end: f"/price?bzn={zone}&start={start}&end={end}", "price", column
     )
 
 
+def fetch_forecast(production_type: str, column: str) -> pl.DataFrame:
+    """One TSO day-ahead forecast for Germany, MW."""
+    return fetch_series(
+        lambda start, end: (
+            f"/public_power_forecast?country=de&production_type={production_type}"
+            f"&forecast_type=day-ahead&start={start}&end={end}"
+        ),
+        # this endpoint returns "forecast_values"; /price returns "price"
+        "forecast_values",
+        column,
+    )
+
+
 def join_all(frames: list[pl.DataFrame]) -> pl.DataFrame:
-    """Outer-join several series on utc_timestamp. Empty inputs are dropped."""
+    """Outer-join several series on utc_timestamp, so no row from any series is lost."""
     usable = [frame for frame in frames if frame.height > 0]
     if not usable:
         return pl.DataFrame({"utc_timestamp": []})
     out = usable[0]
     for frame in usable[1:]:
         out = out.join(frame, on="utc_timestamp", how="full", coalesce=True)
-    return out.sort("utc_timestamp").unique(subset="utc_timestamp", keep="first")
-
-
-def save(table: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    table.write_parquet(path)
-    print(f"\nwrote {path}  rows {table.height:,}  columns {table.width}")
+    return out.sort("utc_timestamp")

@@ -134,19 +134,23 @@ Leaving it unstated is the only unacceptable option.
 
 ## 5. The data
 
-Two raw datasets, one fetch script each, both pulled from the same free API.
+Three raw datasets from the same free API. `src/` only fetches them; the notebook loads each
+with one call and does everything else.
 
 ```
-datafetch/
-  energy_charts.py            shared: throttled GET, payload -> polars, hourly resample
-  fetch_de_day_ahead.py       -> raw_data/de_lu_day_ahead_forecasts.parquet   (~7 min)
-  fetch_neighbour_prices.py   -> raw_data/neighbour_prices.parquet            (~10 min)
-raw_data/
-  de_lu_day_ahead_forecasts.parquet    the target and its fundamentals, 5 columns
-  neighbour_prices.parquet             11 coupled bidding zones, 11 columns
+src/spot_price_forecast/
+  energy_charts.py     throttled GET against the API, payload -> polars, nothing more
+  fetch.py             fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
+data/
+  de_lu_day_ahead_prices.parquet       the target, 1 column               (~2 min to pull)
+  de_lu_day_ahead_forecasts.parquet    the fundamentals, 4 columns        (~8 min)
+  neighbor_prices.parquet              11 coupled bidding zones           (~25 min)
+de_price_forecast.py                   parsing, exploration and modelling: edit this one
+de_price_forecast.ipynb                its jupytext pair, synced from the .py, carries the outputs
 ```
 
-Both run with `uv run python datafetch/<script>.py` and need no credentials.
+Each function reads its file from `data/` when it exists and pulls it otherwise. Pass
+`refresh=True` to pull again. No credentials needed.
 
 ### Dataset 1 — the German target and its fundamentals
 
@@ -174,19 +178,19 @@ earlier only.
 
 ### Both
 
-Index is `utc_timestamp`, timezone-aware UTC, hourly. Joining them and building features is
-step 1 and is not done here: these files are the raw pulls, resampled to hourly and nothing
-else. No lags, no aggregates, no calendar columns, no scaling.
+Index is `utc_timestamp`, timezone-aware UTC. The files are the raw pulls at whatever
+resolution the API serves: no resampling, no joins, no lags, no calendar columns, no scaling.
+All of that happens in the notebook.
 
 **Source:** Energy-Charts API, Fraunhofer ISE, `api.energy-charts.info`, no key, CC BY 4.0.
 Price series are relabelled from **Bundesnetzagentur | SMARD.de** and must be attributed to
 them, not Fraunhofer, in the report.
 
 **Quirks to know before you touch it.** Forecasts are natively 15-minute; price is hourly
-until the European market-time-unit change in late 2025 and 15-minute after, so both are
-mean-resampled to hourly. Price range is **-500 to +936 EUR/MWh**, and the -500 floor is
+until the European market-time-unit change on 2025-10-01 and 15-minute after, and the
+notebook averages both to hourly. Price range is **-500 to +936 EUR/MWh**, and the -500 floor is
 the auction's technical minimum, not an outlier to clean. Negative hours rose from 211 in
-2019 to 576 in 2025. The last rows carry a load forecast and no price, because the forecast
+2019 to 576 in 2025. The last rows can carry a load forecast and no price, because the forecast
 runs ahead of the auction; drop unpriced rows before training. The API rate-limits hard, so
 the fetchers sleep 6 seconds between calls and back off on 429.
 
