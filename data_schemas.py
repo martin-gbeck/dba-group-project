@@ -20,6 +20,7 @@ import polars as pl
 from pandera.api.polars.model_config import BaseConfig
 from pandera.polars import PolarsData
 
+# the datetime column must be in timezone UTC
 UtcTimestamp = Annotated[pl.Datetime, "us", "UTC"]
 
 PRICE_FLOOR = -500.0

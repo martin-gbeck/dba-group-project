@@ -8,9 +8,9 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.5
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3.12.0 (spot-price-forecast; uv)
 #     language: python
-#     name: python3
+#     name: Python 3.12.0 (spot-price-forecast; uv)
 # ---
 
 # %% [markdown]
@@ -136,30 +136,56 @@ df.head(3)
 # %% [markdown]
 # ## 3. Split
 #
-# Chronological by delivery date. Everything from here explores train only; validation picks hyperparameters and test is scored once at the end.
+# Chronological by delivery date, with two validation folds so hyperparameters are chosen on more than one year:
+#
+# | Fold | Train | Validate |
+# |---|---|---|
+# | 1 | 2019 to 2022 | 2023 |
+# | 2 | 2019 to 2023 | 2024 |
+#
+# Fold scores are averaged in MASE, since 2023 and 2024 sit at different price levels. The chosen model is then refit on 2019 to 2024 and scores the test set, 2025 onward, once.
+#
+# Exploration below uses 2019 to 2023, everything fold 2 trains on. That makes fold 1's score slightly optimistic: the features are shaped partly by looking at 2023, its validation year. Fold 2's 2024 was never explored.
 
 # %% [markdown]
-# Split by year into train, validation and test, and show the size and dates of each.
+# Define the two folds and the test set, and show the size and dates of each.
 
 # %%
-train = df.filter(pl.col("year") <= 2023)
-validation = df.filter(pl.col("year") == 2024)
-test = df.filter(pl.col("year") >= 2025)
+LAST_EXPLORED_YEAR = 2023
+TEST_FROM = 2025
+FOLDS = {
+    "fold 1": 2023,
+    "fold 2": 2024,
+}  # fold name: validation year, trained on all years before it
 
-pl.concat(
+# exploration works on everything fold 2 trains on
+train = df.filter(pl.col("year") <= LAST_EXPLORED_YEAR)
+test = df.filter(pl.col("year") >= TEST_FROM)
+folds = {
+    name: (df.filter(pl.col("year") < year), df.filter(pl.col("year") == year))
+    for name, year in FOLDS.items()
+}
+
+# one row per piece: each fold's training and validation data, then the test set
+pieces = [
+    (f"{name} {role}", part)
+    for name, (fit, valid) in folds.items()
+    for role, part in (("train", fit), ("validate", valid))
+] + [("test", test)]
+pl.DataFrame(
     [
-        part.select(
-            set=pl.lit(name),
-            hours=pl.len(),
-            first_day=pl.col("date").min(),
-            last_day=pl.col("date").max(),
-        )
-        for name, part in [("train", train), ("validation", validation), ("test", test)]
+        {
+            "set": label,
+            "hours": part.height,
+            "first_day": part["date"].min(),
+            "last_day": part["date"].max(),
+        }
+        for label, part in pieces
     ]
 )
 
 # %% [markdown]
-# Train covers three markets: calm (2019 to 2020), the gas crisis (2021 to 2022) and the recovery (2023). Validation and test both come after the crisis, and only test contains quarter-hour auctions.
+# Train covers three markets: calm (2019 to 2020), the gas crisis (2021 to 2022) and the recovery (2023). Fold 1 validates on the first year after the crisis and fold 2 on a calm one, so a setting has to work in both. Only test contains quarter-hour auctions.
 
 # %% [markdown]
 # ## 4. Exploration
