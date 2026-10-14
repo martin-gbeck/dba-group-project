@@ -3,8 +3,8 @@
 `coerce=True` casts each column to the dtype stated here. `strict="filter"` drops every
 column the model does not list, so the validated frame holds exactly these columns.
 
-The bounds are market facts rather than guesses. Day-ahead prices are bounded by the
-exchange's technical limits: a floor of -500 EUR/MWh, which is a real auction outcome and
+The bounds come from the market, not from the data. Day-ahead prices are bounded by the
+exchange's technical limits: a floor of -500 EUR/MWh, which the auction does reach and is
 not an outlier, and a ceiling of 4,000. Residual load goes negative when wind and solar
 exceed demand, so it has no floor at zero.
 
