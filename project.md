@@ -29,9 +29,10 @@ matters, not only their order: a cheap hour is not worth it if it pulls expensiv
 neighbours into the shift. The premium is in euros, which a simple ranking of hours by
 forecast wind and demand cannot weigh, but a price forecast can.
 
-Two simplifications, both worth stating: a shift stays within one day, though a real shift
-can cross midnight; and the weekend premium covers every hour, so it raises the cost of a
-weekend shift without changing which one wins.
+Three simplifications, all worth stating: a shift stays within one day, though a real shift
+can cross midnight; the weekend premium covers every hour, so it raises the cost of a
+weekend shift without changing which one wins; and night and weekend premiums do not stack,
+though in practice a weekend night usually earns both.
 
 We picked this use of a spot-price forecast on purpose. Richer ones exist, battery
 arbitrage being the obvious example, but they add machinery without making anything
@@ -142,13 +143,17 @@ so in one sentence, and it must not be left out.
 
 ## 5. The data
 
-Three raw datasets from the same free API. `src/` only fetches them; the notebook loads
-each with one call and does everything else.
+Three raw datasets from the same free API. `lib/fetching.py` only fetches them; the
+notebook loads each with one call and does everything else.
 
 ```
-src/spot_price_forecast/
-  energy_charts.py     throttled GET against the API, payload -> polars, nothing more
-  fetch.py             fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
+lib/
+  fetching.py          the API pull: fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
+  data_schemas.py      the data model the merged table is validated against
+  splitting.py         the expanding-window folds
+  modeling.py          Lasso-then-XGBoost, the asinh wrapper, columns -> model matrix
+  evaluation.py        scoring and the fold loop
+  decision.py          the shift choice and the staff premium
 data/
   de_lu_day_ahead_prices.parquet       the target, 1 column               (~2 min to pull)
   de_lu_day_ahead_forecasts.parquet    the fundamentals, 4 columns        (~8 min)
@@ -253,10 +258,9 @@ day D's neighbour prices are decided at the same moment as ours. D-1 and earlier
 Fit on train, choose hyperparameters on validation, and touch the test set once, at the
 end.
 
-The course covers linear methods, model selection, trees and neural networks, so fit one
-of each and report the comparison. If several methods land within a few percent of each
-other, that is a finding about the problem, not a failure to tune, and reporting it is
-worth more than presenting only the winner.
+If several methods land within a few percent of each other, that is a finding about the
+problem, not a failure to tune, and reporting it is worth more than presenting only the
+winner.
 
 Evaluate with **MAE and RMSE**, plus a business metric: the euros the schedule saves. The
 two can disagree, and when they do, the business case rests on the euros.
@@ -321,8 +325,7 @@ evening peak. Per-hour models are standard in the field and untested here.
 ## 7. What done looks like
 
 1. A feature pipeline where every column passes the 11:55 test, and a chronological split.
-2. A comparison across the model families on the syllabus, with both baselines, on MAE and
-   RMSE.
+2. The chosen method against both baselines, on MAE and RMSE.
 3. For one chosen day, the 24-hour predicted price curve against what actually cleared.
 4. The euro answer: given the forecast, which shift would the company have run, what would
    it have paid for electricity and premiums, and how does that compare with a standard

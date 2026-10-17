@@ -12,11 +12,9 @@ dependencies = [
     "plotnine>=0.15.8",
     "polars>=1.44.2",
     "pyarrow>=26.0.0",
+    "scikit-learn>=1.9.1",
+    "xgboost>=3.4.1",
 ]
-
-[build-system]
-requires = ["uv_build>=0.12.12,<0.13.0"]
-build-backend = "uv_build"
 
 [dependency-groups]
 dev = [

@@ -30,6 +30,12 @@ PRICE_CEILING = 4000.0
 class CombinedDataSchema(pa.DataFrameModel):
     """One row per delivery hour: the target, its fundamentals, the neighbours, the calendar."""
 
+    class Config(BaseConfig):  # ty: ignore[invalid-mutable-override]
+        """Cast every column to its declared type and drop the columns the model does not list."""
+
+        coerce = True
+        strict = "filter"
+
     # fmt: off
     utc_timestamp: UtcTimestamp = pa.Field(unique=True)                           # start of the delivery hour, UTC
     date: pl.Date = pa.Field()                                                    # delivery day, German local time
@@ -78,7 +84,3 @@ class CombinedDataSchema(pa.DataFrameModel):
                 abs_tol=1e-6,
             )
         )
-
-    class Config(BaseConfig):
-        coerce = True
-        strict = "filter"
