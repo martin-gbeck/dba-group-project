@@ -81,8 +81,8 @@ def cross_validate(
     """Fit a fresh copy of the model on each fold's training years, score its validation
     year, and average over the folds. The model passed in stays unfitted.
 
-    Returns the averaged scores, with `saving_share_fold_sd` as the noise between folds,
-    and the out-of-fold predictions for diagnostics.
+    Returns the averaged scores, with `saving_share_fold_sd` and `mae_fold_sd` as the
+    noise between folds, and the out-of-fold predictions for diagnostics.
     """
     scores: list[Scores] = []
     oof: list[pl.DataFrame] = []
@@ -92,9 +92,15 @@ def cross_validate(
         pred = fold_model.predict(df_to_np(valid, columns))
         scores.append(evaluate(valid, pred))
         oof.append(valid.with_columns(pred=pl.Series(pred)))
+    return summarise_folds(scores), pl.concat(oof)
+
+
+def summarise_folds(scores: list[Scores]) -> Scores:
+    """Average each fold's scores, adding `saving_share_fold_sd` and `mae_fold_sd` as the
+    noise between folds."""
     table = pl.DataFrame(scores)
     # Series.mean and .std are typed as any scalar; on these float columns they are floats
     summary: Scores = {k: cast(float | None, table[k].mean()) for k in table.columns}
     summary["saving_share_fold_sd"] = cast(float | None, table["saving_share"].std())
-
-    return summary, pl.concat(oof)
+    summary["mae_fold_sd"] = cast(float | None, table["mae"].std())
+    return summary
