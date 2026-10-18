@@ -1133,7 +1133,7 @@ pl.DataFrame(
 # - `LassoThenXGB(columns, linear_columns, alpha, **xgb_settings)`, in `lib/modeling.py`, is the two-stage method. A Lasso fits the price on `linear_columns`, with the calendar one-hot encoded and the rest standardised; XGBoost then fits what the Lasso got wrong, on every column; the prediction is the sum of the two. `columns` lists every column of the matrix it gets, in order.
 # - `XGBRegressor`, straight from the xgboost library, is XGBoost alone.
 # - `lear_forecast(fit, predict)`, in `lib/modeling.py`, builds LEAR's inputs from the hourly table, fits the 24 Lassos on the last two years of `fit` and returns a price forecast for every hour of `predict`.
-# - `summarise_folds(scores)`, in `lib/evaluation.py`, averages a list of yearly scores and adds their fold SDs, as `cross_validate` does. LEAR builds its own inputs, so it is scored one year at a time with `evaluate` and summed up with this.
+# - `summarise_folds(scores)`, in `lib/evaluation.py`, averages a list of yearly scores and adds their fold SDs, as `cross_validate` does. LEAR builds its own inputs, so it is scored one year at a time with `evaluate` and its two years averaged with this.
 # - `cross_validate(model, columns, data, FOLDS)`, in `lib/evaluation.py`: for each fold, fits a fresh copy of the model on the years before the validation year, predicts that year and scores it with `evaluate`. Returns the scores averaged over the two folds with `saving_share_fold_sd` and `mae_fold_sd`, the noise between folds, and the out-of-fold predictions.
 # - `evaluate(frame, score, pick_with_premium, report_error)`, in `lib/evaluation.py`, picks each day's shift from `score` and computes the scores listed above. `pick_with_premium=False` is for a score that is not in EUR/MWh, such as residual load, which picks without adding the premium. `report_error=False` skips MAE, RMSE and MASE for a score that is not an hourly price forecast.
 # - `df_to_np(frame, columns)`, in `lib/modeling.py`, turns the named columns into the number matrix a model takes.
@@ -1238,7 +1238,7 @@ pl.concat([pl.DataFrame(comparison_rows), references], how="diagonal_relaxed").s
 # %% [markdown]
 # The two tree methods beat every reference, and LEAR falls just short of the residual-load rule, 93.5% of the possible saving against 94.1%.
 #
-# LEAR loses to both tree methods beyond the noise: 93.5% against 95.6% and 95.4%, gaps of 2.1 and 1.9 points against larger fold SDs of 1.3 and 1.2. Yet its MAE is the lowest of the three, 17.1 EUR/MWh against 17.5 and 18.9. Pricing each hour well is not the same as ranking the hours well, and the ranking is what picks the shift (finding 2). LEAR stops here.
+# LEAR loses to both tree methods beyond the noise: 93.5% against 95.6% and 95.4%, gaps of 2.1 and 1.9 points against larger fold SDs of 1.3 and 1.2. Yet its MAE is the lowest of the three, 17.1 EUR/MWh against 17.5 and 18.9. Pricing each hour well is not the same as ranking the hours well, and the ranking is what picks the shift (finding 2). LEAR is not taken further.
 #
 # Under rule 1 the tree methods tie on both counts: the saving-share gap of 0.2 points is inside the larger fold SD of 1.3, and the MAE gap of 1.4 EUR/MWh is inside the larger MAE fold SD of 3.6, so the simpler XGBoost alone goes forward. Section 5.2 tests the feature groups on Lasso-then-XGBoost, since the groups feed both methods and 5.3 compares both again at their best. Their edge over the residual-load rule, about 1.5 points, is only just above the noise, and whether it holds is the question the rest of the notebook has to answer.
 #
@@ -1334,7 +1334,7 @@ pl.DataFrame(tuning_rows).select(
 #
 
 # %% [markdown]
-# The grid above tuned only Lasso-then-XGBoost, so any lead it has over XGBoost alone could come from the tuning. To compare them at their best, XGBoost alone gets the same number of settings on the same columns: trees 3 or 6 levels deep, at learning rates of 0.05, 0.1 or 0.3, with 200 trees each. If several settings sit within the top one's fold SD, the one with the lowest MAE counts as its best. One cross-validation over both folds takes about a second for either method (timed outside this notebook), so six settings per method cost seconds.
+# The grid above tuned only Lasso-then-XGBoost, so any lead it has over XGBoost alone could come from the tuning. To compare them at their best, XGBoost alone gets the same number of settings on the same columns: trees 3 or 6 levels deep, at learning rates of 0.05, 0.1 or 0.3, with 200 trees each. If more than one setting sits within the top one's fold SD, the one with the lowest MAE counts as its best. One cross-validation over both folds takes about a second for either method (timed outside this notebook), so six settings per method cost seconds.
 #
 # The rule, fixed before this ran, is rule 1 between the two bests: XGBoost alone replaces Lasso-then-XGBoost if it wins, and also on a tie on both counts, as the simpler model.
 #
@@ -1367,7 +1367,7 @@ xgb_tuning.select(
 ).sort("saving_share", descending=True)
 
 # %% [markdown]
-# XGBoost alone tops out at 95.9% with depth 6 at a learning rate of 0.05. Its fold SD of 0.9 points takes in four other settings, and of those depth 3 at 0.05 has the lowest MAE, 17.0 EUR/MWh at 95.6%, which makes it XGBoost alone's best under rule 2. The default rate of 0.3 does worst at depth 6.
+# XGBoost alone reaches at most 95.9%, with depth 6 at a learning rate of 0.05. Its fold SD of 0.9 points includes four other settings, and of those depth 3 at 0.05 has the lowest MAE, 17.0 EUR/MWh at 95.6%, which makes it XGBoost alone's best under rule 2. The default rate of 0.3 does worst at depth 6.
 #
 
 # %% [markdown]
@@ -1410,7 +1410,7 @@ pl.concat(
 #
 
 # %% [markdown]
-# Six settings each is a small search when a cross-validation takes about a second, so both methods now get a wider one. They share the same tree settings: depth 2, 3, 4 or 6, learning rate 0.03, 0.05 or 0.1, and 200 or 500 trees, 24 combinations. Lasso-then-XGBoost also tries a penalty of 0.3, 1 or 3 on each, 72 settings in all, which gives it three times as many chances, so if the search favours either method, it favours this one. Each method's best is picked as before, and the rule above decides between them again.
+# Six settings each is a small search when a cross-validation takes about a second, so both methods now get a wider one. They share the same tree settings: depth 2, 3, 4 or 6, learning rate 0.03, 0.05 or 0.1, and 200 or 500 trees, 24 combinations. Lasso-then-XGBoost also tries a penalty of 0.3, 1 or 3 on each, 72 settings in all, which gives it three times as many chances, so if the search favours either method, it favours this one. Each method's best is picked by rule 2, and rule 1 decides between them again.
 #
 
 # %% [markdown]
@@ -1459,11 +1459,11 @@ SCORE_COLUMNS = [
 )
 
 # %% [markdown]
-# The wider search lifts Lasso-then-XGBoost to 96.9% of the possible saving with deep, slow trees (depth 6, 500 trees at 0.03), with MAE between 17.3 and 18.2 EUR/MWh among its five best. XGBoost alone tops out at 96.4% with depth 4, and its MAE swings far more between the two years, with MAE fold SDs up to 5.3 EUR/MWh.
+# The wider search lifts Lasso-then-XGBoost to 96.9% of the possible saving with deep, slow trees (depth 6, 500 trees at 0.03), with MAE between 17.3 and 18.2 EUR/MWh among its five best. XGBoost alone reaches at most 96.4%, with depth 4, and its MAE swings far more between the two years, with MAE fold SDs up to 5.3 EUR/MWh, so its MAE is a weaker guide than Lasso-then-XGBoost's.
 #
 
 # %% [markdown]
-# Pick each method's best setting by the same rule and put the two side by side.
+# Pick each method's best setting by rule 2 and put the two side by side.
 #
 
 # %%
@@ -1489,9 +1489,9 @@ pl.concat(wide_best).select(
 #
 
 # %% [markdown]
-# The winner, XGBoost alone, now gets a much wider search: 100 settings drawn at random, with every parameter varied at once, since tree settings interact and the best value of one depends on the others. It covers depth 2 to 8; 100 to 1,000 trees; a learning rate of 0.01 to 0.3; `reg_lambda`, the L2 penalty on leaf values, of 0.1 to 100; `min_child_weight`, the fewest training rows a leaf may hold, of 1 to 100; and `subsample` and `colsample_bytree`, the share of rows and of columns each tree sees, of 0.6 to 1. Learning rate, penalty and leaf size are drawn on a log scale, since their effect works in multiples. One cross-validation takes 0.4 to 7 seconds, so the search adds about four minutes to a run.
+# The winner, XGBoost alone, now gets a much wider search: 100 settings drawn at random, with every parameter varied at once, since tree settings interact and the best value of one depends on the others. It covers depth 2 to 8; 100 to 1,000 trees; a learning rate of 0.01 to 0.3; `reg_lambda`, the L2 penalty on leaf values, of 0.1 to 100; `min_child_weight`, the fewest training rows a leaf may hold, of 1 to 100; and `subsample` and `colsample_bytree`, the share of rows and of columns each tree sees, of 0.6 to 1. Learning rate, penalty and leaf size are drawn on a log scale, since their effect works in multiples. One cross-validation takes 0.4 to 7 seconds.
 #
-# A best of 100 noisy scores looks better than it is, so the rule, fixed before this ran, protects the current setting, XGBoost alone's best from the wider grid. The search's best, picked as before, replaces it only if it beats it by more than the larger fold SD on the saving share, or ties there and beats it by more than the larger MAE fold SD on MAE.
+# A best of 100 noisy scores looks better than it is, so the rule, fixed before this ran, protects the current setting, XGBoost alone's best from the wider grid. The search's best, picked by rule 2, replaces it only if it beats it by more than the larger fold SD on the saving share, or ties there and beats it by more than the larger MAE fold SD on MAE.
 #
 
 # %% [markdown]
@@ -1529,11 +1529,11 @@ search.sort("saving_share", descending=True).head(10).select(
 )
 
 # %% [markdown]
-# The top of the search is flat: the ten best settings span 96.0% to 96.4% of the possible saving, mostly with trees 6 or 7 levels deep, but their MAE runs from 18.1 to 19.4 EUR/MWh with MAE fold SDs of 2.0 to 3.9, well above the current setting's 17.0.
+# The best settings of the search score about the same: the ten best span 96.0% to 96.4% of the possible saving, mostly with trees 6 or 7 levels deep. Their MAE runs from 18.1 to 19.4 EUR/MWh, well above the current setting's 17.0, so they price the hours worse, and rule 2 passes over them.
 #
 
 # %% [markdown]
-# Pick the search's best by the same rule and put it beside the current setting.
+# Pick the search's best by rule 2 and put it beside the current setting.
 #
 
 # %%
@@ -1556,13 +1556,13 @@ pl.concat(
 ).select("version", *SEARCH_PARAMS, *SCORE_COLUMNS)
 
 # %% [markdown]
-# By rule 2 the search's best is depth 5 with 175 trees at a learning rate of 0.03 and a strong L2 penalty of 61: 95.5% and MAE 17.0 EUR/MWh, level with the current setting's 95.6% and 17.0. It does not beat it, so the current setting stays: depth 3, a learning rate of 0.05 and 200 trees.
+# By rule 2 the search's best is depth 5 with 175 trees at a learning rate of 0.03 and a strong L2 penalty of 61: 95.5% and MAE 17.0 EUR/MWh, about the same as the current setting's 95.6% and 17.0. It does not beat it, so the current setting stays: depth 3, a learning rate of 0.05 and 200 trees.
 #
 
 # %% [markdown]
-# Lasso-then-XGBoost finished inside the noise of XGBoost alone, so as the close second it gets the same search: the same 100 tree settings, each with a Lasso penalty drawn on a log scale from 0.1 to 10. This adds about five minutes to a run.
+# Lasso-then-XGBoost finished inside the noise of XGBoost alone, so as the close second it gets the same search: the same 100 tree settings, each with a Lasso penalty drawn on a log scale from 0.1 to 10.
 #
-# The rule, fixed before this ran: the search's best, picked as before, replaces Lasso-then-XGBoost's best from the wider grid only if it beats it beyond the fold SD on the saving share, or ties there and beats it beyond the MAE fold SD on MAE. Then the two methods' bests are compared under rule 1, and on a tie the simpler XGBoost alone stays.
+# The rule, fixed before this ran: the search's best, picked by rule 2, replaces Lasso-then-XGBoost's best from the wider grid only if it beats it beyond the fold SD on the saving share, or ties there and beats it beyond the MAE fold SD on MAE. Then the two methods' bests are compared under rule 1, and on a tie the simpler XGBoost alone stays.
 #
 
 # %% [markdown]
@@ -1589,7 +1589,7 @@ lasso_search.sort("saving_share", descending=True).head(10).select(
 #
 
 # %% [markdown]
-# Pick Lasso-then-XGBoost's best by the same rule and put it beside its wider-grid best and XGBoost alone's current setting.
+# Pick Lasso-then-XGBoost's best by rule 2 and put it beside its wider-grid best and XGBoost alone's current setting.
 #
 
 # %%
@@ -1618,7 +1618,7 @@ pl.concat(
 # %% [markdown]
 # ## 6. Diagnostics
 #
-# On the final model's out-of-fold predictions for 2023 and 2024, the final model being XGBoost alone at depth 3, a learning rate of 0.05 and 200 trees (section 5.3), each year predicted by a model that never saw it. `residual = price - prediction` in EUR/MWh; positive means the model predicted too low.
+# These checks use the final model, XGBoost alone at depth 3, a learning rate of 0.05 and 200 trees (section 5.3), on its out-of-fold predictions for 2023 and 2024: each year is predicted by a model that never saw it. `residual = price - prediction` in EUR/MWh; positive means the model predicted too low.
 #
 
 # %% [markdown]
@@ -1726,7 +1726,7 @@ oof.with_columns(
 # %% [markdown]
 # Ordinary and negative hours are both missed by 16 EUR/MWh, but the 241 hours above 200 EUR/MWh by 89, and they are predicted 61 too low on average. Misses this size weigh far more in RMSE than in MAE: the final model has an RMSE of 26.5 EUR/MWh against an MAE of 17.0.
 #
-# One finding maps to a fix in the diagnostics table: errors that grow with the price level point to an asinh target. The evening peak predicted too low would point to deeper trees, but deeper settings did no better for XGBoost alone in section 5.3, so it stays a known weakness, with the spikes.
+# One finding points to a fix: errors that grow with the price level suggest predicting asinh(price) instead, which compresses large prices. The evening peak predicted too low would point to deeper trees, but deeper settings did no better for XGBoost alone in section 5.3, so it stays a known weakness, with the spikes.
 #
 
 # %% [markdown]
@@ -1758,7 +1758,7 @@ pl.DataFrame(
 #
 # ### 7.1 Test: 2025
 #
-# The final model is refitted on all development data, 2019-01-31 to 2024-12-31, and scored on 2025 beside the no-model references from section 5.1, which the result is measured against. No other model touches 2025: a held-out score must never drive a choice, so only the chosen model is scored. The references that need a history use 2024: the training mean and last year's profile. `saving_eur_per_year` is what the picked shift saves against the standard 06:00 shift for 500 MWh a day, over a year.
+# The final model is refitted on all development data, 2019-01-31 to 2024-12-31, and scored on 2025 beside the no-model references defined in section 5.1, such as the residual-load rule, which the result is measured against. No other model touches 2025: a held-out score must never drive a choice, so only the chosen model is scored. The training mean and last year's profile, the two references that need a history, use 2024. `saving_eur_per_year` is what the picked shift saves against the standard 06:00 shift for 500 MWh a day, over a year.
 #
 
 # %% [markdown]
@@ -1825,8 +1825,8 @@ pl.DataFrame(
 #
 # 1. The forecast beats the residual-load rule: by 1.5 percentage points in CV, just beyond its fold SD of 1.2, and by 2.3 points on 2025, about 105,000 EUR a year for this plant.
 # 2. That gain is small next to the decision itself. Choosing the shift at all, even by the residual-load rule, is worth 4.2 million EUR a year against a fixed 06:00 shift, about 40 times the model's extra 105,000.
-# 3. LEAR, the field's standard linear model for day-ahead prices, gets 93.5% of the possible saving on the folds against the final model's 95.6%, a gap beyond the noise, so the final model holds up against the method the field measures itself by.
-# 4. Price memory is the feature group that matters. Neither the Lasso stage nor the neighbour spreads helps by more than the noise, so the simpler model goes forward, and both random searches found flat tops, so the exact settings matter little.
+# 3. LEAR, the field's standard linear model for day-ahead prices, gets 93.5% of the possible saving on the folds against the final model's 95.6%, a gap beyond the noise, so the final model beats the method the field uses as its standard.
+# 4. Price memory is the feature group that matters. Neither the Lasso stage nor the neighbour spreads helps by more than the noise, so the simpler model goes forward. In both random searches the best settings score about the same, so the exact settings matter little.
 # 5. Spikes are the weak point: hours above 200 EUR/MWh are missed by 89 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low. The asinh target made the decision worse.
 #
 # #### To keep in mind going forward
@@ -2025,11 +2025,11 @@ low, high = min(values) - 5, max(values) + 5
 # %% [markdown]
 # ## Conclusion
 #
-# The forecast does the job the plant needs. On 2025, a full year it never saw, its chosen shifts capture 96.4% of the possible saving against a standard 06:00 shift: about 4.31 million EUR for 500 MWh a day, and 105,000 EUR a year more than choosing the shift by forecast residual load alone. The model is XGBoost on calendar, forecast and recent-price features, chosen over a two-stage Lasso-then-XGBoost and LEAR, the field's standard linear model, under rules fixed before each comparison. Most of the money comes from choosing the shift at all; the forecast's own share is the last 2.3 percentage points, a lead that sits just beyond the noise in cross-validation. The 2026 reserve points the same way, with a smaller lead of 0.9 points.
+# The forecast is good enough to schedule the plant's shift. On 2025, a full year it never saw, its chosen shifts capture 96.4% of the possible saving against a standard 06:00 shift: about 4.31 million EUR for 500 MWh a day, and 105,000 EUR a year more than choosing the shift by forecast residual load alone. The model is XGBoost on calendar, forecast and recent-price features, chosen over a two-stage Lasso-then-XGBoost and LEAR, the field's standard linear model, under rules fixed before each comparison. Most of the money comes from choosing the shift at all; the forecast's own share is the last 2.3 percentage points, a lead that sits just beyond the noise in cross-validation. The 2026 reserve agrees, with a smaller lead of 0.9 points.
 #
 # Limitations, ranked by how much they could change the answer:
 #
-# 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. A real buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time.
+# 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. In practice a buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time.
 # 2. The evidence rests on two validation years and one test year, and each fold SD on just two numbers, so the gap to the residual-load rule is a narrow call.
 # 3. Spikes are missed: hours above 200 EUR/MWh by about 89 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low.
 # 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, assuming its 62.5 MW does not move the market price.
