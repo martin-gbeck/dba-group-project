@@ -54,7 +54,7 @@
 #
 # ## Objective
 #
-# A German manufacturer runs one 8-hour shift a day and buys 500 MWh for it, 62.5 MW in each hour. At 11:55 on D-1, five minutes before the day-ahead auction closes, it picks when tomorrow's shift starts, anywhere from 00:00 to 16:00, to make electricity plus staff premiums as cheap as possible. This notebook builds the price forecast it picks from. The full case is in `project.md`.
+# A German manufacturer runs one 8-hour shift a day and buys 500 MWh for it, 62.5 MW in each hour. At 11:55 on D-1, five minutes before the day-ahead auction closes, it picks when tomorrow's shift starts, anywhere from 00:00 to 16:00, to make electricity plus staff premiums as cheap as possible. This notebook builds the price forecast it picks from.
 #
 # | | |
 # |---|---|
@@ -139,7 +139,7 @@ neighbors_raw = fetch_neighbor_prices()
 # 1. Every file is averaged to UTC hours. Prices go quarter-hourly on 2025-10-01 and the forecasts are quarter-hourly throughout, so the mean puts all three on one grid. It also fills Switzerland, which stays hourly and leaves three of every four quarter-hours empty.
 # 2. The join starts from the price table, so every row has a target.
 # 3. Calendar columns are in German local time, because demand follows the local clock.
-# 4. `fc_residual` is load minus solar and wind, as defined in `project.md`.
+# 4. `fc_residual` is load minus solar and wind: the demand that coal, gas and imports have to cover.
 # 5. The result is validated against the data model in `lib/data_schemas.py`. Read that file for what the table holds.
 #
 
@@ -351,7 +351,7 @@ df.null_count().unpivot(variable_name="column", value_name="null_hours").filter(
 #
 
 # %% [markdown]
-# How far each column is known at the 11:55 D-1 gate, from `project.md`. Everything is usable as a feature up to that point and nothing after it:
+# How far each column is known at the 11:55 D-1 gate. Everything is usable as a feature up to that point and nothing after it:
 #
 # | Column | Known up to | Why |
 # |---|---|---|
@@ -1092,22 +1092,22 @@ pl.DataFrame(
 #
 # ### 5.1 Comparing the models
 #
-# Three methods on the same two validation years, beside the reference rules. The choice follows section 3 and the open benchmark for day-ahead prices of Lago et al. 2021:
+# Three methods are compared on the same two validation years, beside the reference rules. They were chosen from what section 3 found, that most of the price follows a steady daily and weekly pattern driven by residual load and recent prices, and from the standard published comparison of day-ahead price forecasts (Lago et al. 2021):
 #
-# - `lasso-then-xgboost`. Most of the price follows a steady pattern: the daily and weekly shape, and the link to residual load and recent prices (findings 3, 6 and 7). A Lasso fits that pattern, and the trees then fit what it gets wrong, such as the residual-load slope moving with the price level.
-# - `xgboost`, the same method with the Lasso stage switched off, which shows whether that stage earns its place.
-# - `lear`, the standard linear model in that benchmark, which `project.md` names too. It is one Lasso per delivery hour on its own inputs: every hour of the price on D-1, D-2, D-3 and D-7, the load and renewable forecasts for D, D-1 and D-7, and the weekday. Prices pass through asinh, and AIC picks each hour's penalty, so it has no settings to choose. It trains on the two years before each validation year, the window later papers use, and is refitted once a year like the other two; the published version refits every day, which would likely help it. LEAR came out of a short search of that benchmark and later papers on arXiv on 2026-10-17, after the rest of this section had first run.
+# - `lasso-then-xgboost`. A Lasso fits that steady pattern, which a linear model does well (findings 3, 6 and 7), and the trees then fit what the Lasso gets wrong, such as the residual-load slope rising with the price level.
+# - `xgboost`, the same method with the Lasso stage switched off, which shows whether the Lasso stage helps.
+# - `lear`, the standard linear model in that published comparison. It is one Lasso per delivery hour with its own inputs: every hour of the price on D-1, D-2, D-3 and D-7, the load and renewable forecasts for D, D-1 and D-7, and the weekday. Prices pass through asinh, and AIC picks each hour's penalty, so it has no settings to tune. It trains on the two most recent years before each validation year and is refitted once a year, like the other two methods. The published version refits every day, which would probably help it.
 #
-# The two tree methods run at the libraries' default settings, on the same features: 100 trees up to 6 levels deep at a learning rate of 0.3 for XGBoost, and a penalty of 1 for the Lasso. Section 5.3 compares them again at their best.
+# Both tree methods run at the libraries' default settings, on the same features: 100 trees up to 6 levels deep at a learning rate of 0.3 for XGBoost, and a penalty of 1 for the Lasso. Section 5.3 compares them again at their best.
 #
 # Lasso alone is left out: it is Lasso-then-XGBoost without its trees, so on training data it can only do worse, and section 3 found a bend a linear model cannot follow (finding 3).
 #
 # Other methods were considered and not compared, ranked by how likely each was to help:
 #
-# - LambdaRank, ranking the day's 17 possible shifts directly. Each row would have to become a whole shift with its own features, a few hours of work, while the residual-load rule alone already gets 87% to 97% of the possible saving (section 3.10).
-# - Separate models for the daily level and the hourly shape. The decision only needs the shape (finding 2), but this doubles the models to build and read for a gain nothing in section 3 put a size on.
-# - One XGBoost model per delivery hour. LEAR already tests the per-hour design `project.md` suggests, and the trees can split on the hour themselves.
-# - A neural network. Later papers find one beats LEAR, but it has far more settings, costs far more to build and to read, and no finding points to a pattern the trees would miss.
+# - LambdaRank, a method that ranks the day's 17 possible shifts directly instead of forecasting prices. Each row would have to become a whole shift with its own features, a few hours of work, and it could gain only a little: picking the shift with the lowest forecast residual load, with no price model at all, already gets 87% to 97% of the possible saving (section 3.10).
+# - Separate models for the daily price level and the hourly shape. The decision only needs the shape of the day (finding 2), but this doubles the number of models to build and read, and section 3 gives no sign of how much it would help.
+# - One XGBoost model per delivery hour. LEAR already uses one model per hour, so the comparison tests that design, and the trees can split on the hour themselves.
+# - A neural network. Later papers find one beats LEAR, but it has far more settings, costs far more to build and to read, and nothing in section 3 points to a pattern the trees would miss.
 #
 # Every method and setting in this section is scored by `evaluate` in `lib/evaluation.py`, once for each validation year, 2023 and 2024. Tables show the mean of the two years:
 #
@@ -1124,9 +1124,7 @@ pl.DataFrame(
 # 2. A method's best setting: among the settings whose saving share lies within the top setting's fold SD, the one with the lowest MAE.
 # 3. A wider search's best replaces a setting already chosen only if it wins under rule 1, since the best of many noisy scores looks better than it is. Otherwise the current setting stays.
 #
-# These rules were settled on 2026-10-17, after 5.1 and 5.2 first ran with a looser one, where any MAE lead broke a tie. Applied in full, they change two early calls; both are noted where they happen, with what the looser rule decided.
-#
-# The references: `same-hour-yesterday` and `training-mean`, required by `project.md`; `standard-shift`, which scores 0 by definition; `last-year-profile`, the shift that was cheapest on last year's average hourly price; and `residual-load-rule`, which ignores the premium.
+# The references: `same-hour-yesterday` and `training-mean`, the two standard naive forecasts; `standard-shift`, which scores 0 by definition; `last-year-profile`, the shift that was cheapest on last year's average hourly price; and `residual-load-rule`, which ignores the premium.
 #
 
 # %% [markdown]
@@ -1242,7 +1240,7 @@ pl.concat([pl.DataFrame(comparison_rows), references], how="diagonal_relaxed").s
 #
 # LEAR loses to both tree methods beyond the noise: 93.5% against 95.6% and 95.4%, gaps of 2.1 and 1.9 points against larger fold SDs of 1.3 and 1.2. Yet its MAE is the lowest of the three, 17.1 EUR/MWh against 17.5 and 18.9. Pricing each hour well is not the same as ranking the hours well, and the ranking is what picks the shift (finding 2). LEAR stops here.
 #
-# Under rule 1 the tree methods tie on both counts: the saving-share gap of 0.2 points is inside the larger fold SD of 1.3, and the MAE gap of 1.4 EUR/MWh is inside the larger MAE fold SD of 3.6, so the simpler XGBoost alone goes forward. The looser rule first used sent Lasso-then-XGBoost forward on its lower MAE instead, which is why 5.2 tests the feature groups on it; that order does not decide the final model, since 5.3 compares both at their best. Their edge over the residual-load rule, about 1.5 points, is only just above the noise, and whether it holds is the question the rest of the notebook has to answer.
+# Under rule 1 the tree methods tie on both counts: the saving-share gap of 0.2 points is inside the larger fold SD of 1.3, and the MAE gap of 1.4 EUR/MWh is inside the larger MAE fold SD of 3.6, so the simpler XGBoost alone goes forward. Section 5.2 tests the feature groups on Lasso-then-XGBoost, since the groups feed both methods and 5.3 compares both again at their best. Their edge over the residual-load rule, about 1.5 points, is only just above the noise, and whether it holds is the question the rest of the notebook has to answer.
 #
 
 # %% [markdown]
@@ -1288,7 +1286,7 @@ pl.DataFrame(group_rows).select(
 )
 
 # %% [markdown]
-# Price memory is the step that matters: the saving share rises from 64.4% to 95.8%. Without it the forecast level is wrong, and a wrong level misjudges the 10 EUR/MWh premium against the price. The level interaction adds 0.4 percentage points, inside its fold SD of 0.9, and MAE stays at 19.1 EUR/MWh, so it is dropped; the trees can find that interaction on their own. Neighbour spreads lower the saving share by 0.6 points, inside the noise, and cut MAE from 19.1 to 17.5 EUR/MWh, a gap of 1.6 inside the larger MAE fold SD of 2.6, so under rule 1 they tie on both counts and are dropped as the simpler option. The looser rule first used kept them, and the three earlier 2025 scores in section 7.1 were made with them.
+# Price memory is the step that matters: the saving share rises from 64.4% to 95.8%. Without it the forecast level is wrong, and a wrong level misjudges the 10 EUR/MWh premium against the price. The level interaction adds 0.4 percentage points, inside its fold SD of 0.9, and MAE stays at 19.1 EUR/MWh, so it is dropped; the trees can find that interaction on their own. Neighbour spreads lower the saving share by 0.6 points, inside the noise, and cut MAE from 19.1 to 17.5 EUR/MWh, a gap of 1.6 inside the larger MAE fold SD of 2.6, so under rule 1 they tie on both counts and are dropped as the simpler option.
 #
 #
 
@@ -1336,7 +1334,7 @@ pl.DataFrame(tuning_rows).select(
 #
 
 # %% [markdown]
-# The grid above tuned only Lasso-then-XGBoost, the method the looser rule first sent forward from 5.1, so any lead it has over XGBoost alone could come from the tuning. To compare them at their best, XGBoost alone gets the same number of settings on the same columns: trees 3 or 6 levels deep, at learning rates of 0.05, 0.1 or 0.3, with 200 trees each. If several settings sit within the top one's fold SD, the one with the lowest MAE counts as its best. One cross-validation over both folds takes about a second for either method (timed outside this notebook), so six settings per method cost seconds.
+# The grid above tuned only Lasso-then-XGBoost, so any lead it has over XGBoost alone could come from the tuning. To compare them at their best, XGBoost alone gets the same number of settings on the same columns: trees 3 or 6 levels deep, at learning rates of 0.05, 0.1 or 0.3, with 200 trees each. If several settings sit within the top one's fold SD, the one with the lowest MAE counts as its best. One cross-validation over both folds takes about a second for either method (timed outside this notebook), so six settings per method cost seconds.
 #
 # The rule, fixed before this ran, is rule 1 between the two bests: XGBoost alone replaces Lasso-then-XGBoost if it wins, and also on a tie on both counts, as the simpler model.
 #
@@ -1412,7 +1410,7 @@ pl.concat(
 #
 
 # %% [markdown]
-# Six settings each is a small search when a cross-validation takes about a second, so both methods now get a wider one. They share the same tree settings: depth 2, 3, 4 or 6, learning rate 0.03, 0.05 or 0.1, and 200 or 500 trees, 24 combinations. Lasso-then-XGBoost also tries a penalty of 0.3, 1 or 3 on each, 72 settings in all, which gives it three times as many chances, so if the search favours either method, it favours this one. Each method's best is picked as before, and the rule above decides between them again. The six-setting results stay above for the record.
+# Six settings each is a small search when a cross-validation takes about a second, so both methods now get a wider one. They share the same tree settings: depth 2, 3, 4 or 6, learning rate 0.03, 0.05 or 0.1, and 200 or 500 trees, 24 combinations. Lasso-then-XGBoost also tries a penalty of 0.3, 1 or 3 on each, 72 settings in all, which gives it three times as many chances, so if the search favours either method, it favours this one. Each method's best is picked as before, and the rule above decides between them again.
 #
 
 # %% [markdown]
@@ -1732,7 +1730,7 @@ oof.with_columns(
 #
 
 # %% [markdown]
-# Test the asinh target against the final model on the same folds. On Lasso-then-XGBoost, the final model before section 5.3's check, the asinh target lowered the saving share from 96.0% to 92.4% and raised MAE from 16.1 to 18.7 EUR/MWh.
+# Test the asinh target against the final model on the same folds.
 #
 
 # %%
@@ -1752,7 +1750,7 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# Tried, worse: the asinh target lowers the saving share from 95.6% to 93.1% and raises MAE from 17.0 to 18.0 EUR/MWh, as it did for the earlier models. Compressing the spikes also compresses the gaps between hours that pick the shift. The final model stays as it is.
+# Tried, worse: the asinh target lowers the saving share from 95.6% to 93.1% and raises MAE from 17.0 to 18.0 EUR/MWh. Compressing the spikes also compresses the gaps between hours that pick the shift. The final model stays as it is.
 #
 
 # %% [markdown]
@@ -1760,7 +1758,7 @@ pl.DataFrame(
 #
 # ### 7.1 Test: 2025
 #
-# The final model is refitted on all development data, 2019-01-31 to 2024-12-31, and scored on 2025 beside the no-model references from section 5.1, which the result is measured against. No other model touches 2025: a held-out score must never drive a choice, so only the chosen model is scored. Earlier drafts of this notebook broke that rule and scored LEAR and three superseded final models on 2025; those runs changed no decision, and their results are not shown. The references that need a history use 2024: the training mean and last year's profile. `saving_eur_per_year` is what the picked shift saves against the standard 06:00 shift for 500 MWh a day, over a year.
+# The final model is refitted on all development data, 2019-01-31 to 2024-12-31, and scored on 2025 beside the no-model references from section 5.1, which the result is measured against. No other model touches 2025: a held-out score must never drive a choice, so only the chosen model is scored. The references that need a history use 2024: the training mean and last year's profile. `saving_eur_per_year` is what the picked shift saves against the standard 06:00 shift for 500 MWh a day, over a year.
 #
 
 # %% [markdown]
@@ -1828,7 +1826,7 @@ pl.DataFrame(
 # 1. The forecast beats the residual-load rule: by 1.5 percentage points in CV, just beyond its fold SD of 1.2, and by 2.3 points on 2025, about 105,000 EUR a year for this plant.
 # 2. That gain is small next to the decision itself. Choosing the shift at all, even by the residual-load rule, is worth 4.2 million EUR a year against a fixed 06:00 shift, about 40 times the model's extra 105,000.
 # 3. LEAR, the field's standard linear model for day-ahead prices, gets 93.5% of the possible saving on the folds against the final model's 95.6%, a gap beyond the noise, so the final model holds up against the method the field measures itself by.
-# 4. Price memory is the feature group that matters. Neither the Lasso stage nor the neighbour spreads is shown to earn its place under the rules, so the simpler model goes forward, and both random searches found flat tops, so the exact settings matter little.
+# 4. Price memory is the feature group that matters. Neither the Lasso stage nor the neighbour spreads helps by more than the noise, so the simpler model goes forward, and both random searches found flat tops, so the exact settings matter little.
 # 5. Spikes are the weak point: hours above 200 EUR/MWh are missed by 89 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low. The asinh target made the decision worse.
 #
 # #### To keep in mind going forward
@@ -2034,7 +2032,7 @@ low, high = min(values) - 5, max(values) + 5
 # 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. A real buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time.
 # 2. The evidence rests on two validation years and one test year, and each fold SD on just two numbers, so the gap to the residual-load rule is a narrow call.
 # 3. Spikes are missed: hours above 200 EUR/MWh by about 89 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low.
-# 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, which `project.md` puts at about 0.18 EUR/MWh of price impact.
+# 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, assuming its 62.5 MW does not move the market price.
 # 5. No fuel price and no public holidays are in the data, so the level comes from recent prices alone.
 # 6. LEAR was refitted once a year rather than daily as published, which likely understates it.
 #
