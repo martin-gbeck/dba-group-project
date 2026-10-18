@@ -7,7 +7,7 @@ Every function works on the hourly table built in notebook section 4.2, which ca
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import cast
+from typing import TypedDict, cast
 
 import numpy as np
 import polars as pl
@@ -16,8 +16,32 @@ from lib.decision import SHIFT_HOURS, SHIFT_MW, STANDARD_SHIFT, best_shift, prem
 from lib.modeling import Regressor, df_to_np
 from lib.splitting import make_folds
 
-# one period's scores by name; None where a metric does not apply, such as MAE for a rule
-Scores = dict[str, float | None]
+# a score, or None where it does not apply, such as MAE for the residual-load rule
+type Metric = float | None
+
+
+class Scores(TypedDict):
+    """One period's scores. MAE, RMSE and MASE are None for a score that is not an hourly
+    price forecast, such as residual load."""
+
+    mae: Metric  # EUR/MWh
+    rmse: Metric  # EUR/MWh
+    mase: Metric  # MAE over that of same hour yesterday
+    shift_cost: float  # EUR/MWh, electricity plus premium, of the picked shifts
+    # share of the possible saving: (standard - picked) / (standard - hindsight),
+    # each a shift's cost in EUR/MWh
+    saving_share: float
+    right_shift_share: float  # share of days on which the picked shift is the cheapest
+    # what the picked shift saves against the standard shift over a year, for 500 MWh a day
+    saving_eur_per_year: float
+
+
+class CVScores(Scores):
+    """Scores averaged over the validation years, with how far two of them move from
+    year to year."""
+
+    saving_share_fold_sd: Metric  # SD of the yearly saving shares
+    mae_fold_sd: Metric  # SD of the yearly MAEs
 
 
 def evaluate(
@@ -59,25 +83,24 @@ def evaluate(
         )
         .row(0, named=True)
     )
-    return {
-        "mae": out["mae"] if report_error else None,
-        "rmse": out["rmse"] if report_error else None,
-        "mase": out["mae"] / out["naive_mae"] if report_error else None,
-        "shift_cost": out["shift_cost"],
-        "saving_share": (out["standard_cost"] - out["shift_cost"])
+    return Scores(
+        mae=out["mae"] if report_error else None,
+        rmse=out["rmse"] if report_error else None,
+        mase=out["mae"] / out["naive_mae"] if report_error else None,
+        shift_cost=out["shift_cost"],
+        saving_share=(out["standard_cost"] - out["shift_cost"])
         / (out["standard_cost"] - out["best_cost"]),
-        "right_shift_share": out["right_shift_share"],
-        # what the picked shift saves against the standard shift for a 500 MWh day, over a year
-        "saving_eur_per_year": (out["standard_cost"] - out["shift_cost"])
+        right_shift_share=out["right_shift_share"],
+        saving_eur_per_year=(out["standard_cost"] - out["shift_cost"])
         * SHIFT_MW
         * SHIFT_HOURS
         * 365,
-    }
+    )
 
 
 def cross_validate(
     model: Regressor, columns: list[str], data: pl.DataFrame, folds: dict[str, int]
-) -> tuple[Scores, pl.DataFrame]:
+) -> tuple[CVScores, pl.DataFrame]:
     """Fit a fresh copy of the model on each fold's training years, score its validation
     year, and average over the folds. The model passed in stays unfitted.
 
@@ -95,12 +118,13 @@ def cross_validate(
     return summarise_folds(scores), pl.concat(oof)
 
 
-def summarise_folds(scores: list[Scores]) -> Scores:
-    """Average each fold's scores, adding `saving_share_fold_sd` and `mae_fold_sd` as the
-    noise between folds."""
+def summarise_folds(scores: list[Scores]) -> CVScores:
+    """Average the validation years' scores and add the SD of the saving share and of MAE
+    across those years."""
     table = pl.DataFrame(scores)
-    # Series.mean and .std are typed as any scalar; on these float columns they are floats
-    summary: Scores = {k: cast(float | None, table[k].mean()) for k in table.columns}
-    summary["saving_share_fold_sd"] = cast(float | None, table["saving_share"].std())
-    summary["mae_fold_sd"] = cast(float | None, table["mae"].std())
-    return summary
+    summary = {k: table[k].mean() for k in table.columns}
+    summary["saving_share_fold_sd"] = table["saving_share"].std()
+    summary["mae_fold_sd"] = table["mae"].std()
+    # the table's columns are exactly the keys of Scores, so the averages plus the two
+    # SDs make a CVScores
+    return cast(CVScores, summary)

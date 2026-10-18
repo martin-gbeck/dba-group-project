@@ -1098,13 +1098,15 @@ pl.DataFrame(
 # - `xgboost`, the same method with the Lasso stage switched off, which shows whether the Lasso stage helps.
 # - `lear`, the standard linear model in that published comparison. It is one Lasso per delivery hour with its own inputs: every hour of the price on D-1, D-2, D-3 and D-7, the load and renewable forecasts for D, D-1 and D-7, and the weekday. Prices pass through asinh, and AIC picks each hour's penalty, so it has no settings to tune. It trains on the two most recent years before each validation year and is refitted once a year, like the other two methods. The published version refits every day, which would probably help it.
 #
+# Choosing the shift by forecast residual load alone, with no price model, already gets 87% to 97% of the possible saving (section 3.10), so any method can add at most the remaining 3% to 13%.
+#
 # Both tree methods run at the libraries' default settings, on the same features: 100 trees up to 6 levels deep at a learning rate of 0.3 for XGBoost, and a penalty of 1 for the Lasso. Section 5.3 compares them again at their best.
 #
 # Lasso alone is left out: it is Lasso-then-XGBoost without its trees, so on training data it can only do worse, and section 3 found a bend a linear model cannot follow (finding 3).
 #
 # Other methods were considered and not compared, ranked by how likely each was to help:
 #
-# - LambdaRank, a method that ranks the day's 17 possible shifts directly instead of forecasting prices. Each row would have to become a whole shift with its own features, a few hours of work, and it could gain only a little: picking the shift with the lowest forecast residual load, with no price model at all, already gets 87% to 97% of the possible saving (section 3.10).
+# - LambdaRank, a method that ranks the day's 17 possible shifts instead of forecasting prices. Each row would have to become a whole shift with its own features, a few hours of work, and nothing in section 3 suggests that ranking shifts would beat ranking them by a price forecast.
 # - Separate models for the daily price level and the hourly shape. The decision only needs the shape of the day (finding 2), but this doubles the number of models to build and read, and section 3 gives no sign of how much it would help.
 # - One XGBoost model per delivery hour. LEAR already uses one model per hour, so the comparison tests that design, and the trees can split on the hour themselves.
 # - A neural network. Later papers find one beats LEAR, but it has far more settings, costs far more to build and to read, and nothing in section 3 points to a pattern the trees would miss.
@@ -1112,11 +1114,11 @@ pl.DataFrame(
 # Every method and setting in this section is scored by `evaluate` in `lib/evaluation.py`, once for each validation year, 2023 and 2024. Tables show the mean of the two years:
 #
 # - `saving_share`, which decides: `(standard - shift_cost) / (standard - hindsight)`. Each term is a year's average cost in EUR/MWh, electricity plus premium, of one kind of shift: the standard 06:00 to 14:00 shift, the shift the method picks, and the cheapest shift in hindsight. 100% matches hindsight, 0% is no better than the standard shift. It comes from the year's totals rather than an average over days, so a day with more to save counts for more.
-# - `saving_share_fold_sd`: the standard deviation of the two yearly saving shares, how far the score moves between 2023 and 2024. It is the noise in the rules below, and resting on two numbers, it is a rough one.
+# - `saving_share_fold_sd`: the standard deviation of only two numbers, the 2023 saving share and the 2024 saving share, each computed from that whole year's totals with no daily figures behind it. For two numbers the SD is their gap divided by √2, about 0.7 times the gap. It is the noise in the rules below, and a rough one.
 # - `shift_cost`: the average EUR/MWh, electricity plus premium, of the shifts a method picks. A price forecast picks the shift with the lowest forecast price plus premium.
 # - `right_shift_share`: the share of days on which the method picks the cheapest shift.
 # - `mae` and `rmse` in EUR/MWh, and `mase`, the MAE over that of same hour yesterday. `rmse` squares each miss before averaging, so a few large misses raise it far more than they raise MAE. These are reported for the course and only decide a tie.
-# - `mae_fold_sd`: the standard deviation of the two yearly MAEs, the noise for MAE.
+# - `mae_fold_sd`: the same for MAE, the standard deviation of the 2023 MAE and the 2024 MAE.
 #
 # Three rules decide every choice from here on, each fixed before the comparison it settles:
 #
@@ -1169,7 +1171,7 @@ ALL_COLUMNS = list(dict.fromkeys(TREE_COLUMNS + LINEAR_COLUMNS))
 #
 
 # %%
-reference_rows: list[dict[str, str | float | None]] = []
+reference_rows: list[dict[str, object]] = []
 for fit, valid in make_folds(dev, FOLDS).values():
     last_year = (
         fit.filter(pl.col("year") == fit["year"].max())
@@ -1209,7 +1211,7 @@ references = (
 #
 
 # %%
-comparison_rows: list[dict[str, str | float | None]] = []
+comparison_rows: list[dict[str, object]] = []
 for name, model, columns in (
     ("lasso-then-xgboost", LassoThenXGB(ALL_COLUMNS, LINEAR_COLUMNS), ALL_COLUMNS),
     ("xgboost", XGBRegressor(random_state=0), TREE_COLUMNS),
@@ -1267,7 +1269,7 @@ STEPS = [
     ],
 ]
 
-group_rows: list[dict[str, str | float | None]] = []
+group_rows: list[dict[str, object]] = []
 for groups in STEPS:
     linear = columns_for(groups, linear=True)
     columns = list(dict.fromkeys(columns_for(groups) + linear))
@@ -1303,7 +1305,7 @@ KEPT_GROUPS = ["calendar", "fundamentals", "price-memory"]
 FINAL_LINEAR = columns_for(KEPT_GROUPS, linear=True)
 FINAL_COLUMNS = list(dict.fromkeys(columns_for(KEPT_GROUPS) + FINAL_LINEAR))
 
-tuning_rows: list[dict[str, str | float | None]] = []
+tuning_rows: list[dict[str, object]] = []
 for alpha in (0.3, 1.0, 3.0):
     for depth in (3, 6):
         model = LassoThenXGB(
@@ -1344,7 +1346,7 @@ pl.DataFrame(tuning_rows).select(
 #
 
 # %%
-xgb_rows: list[dict[str, str | float | None]] = []
+xgb_rows: list[dict[str, object]] = []
 for depth in (3, 6):
     for rate in (0.05, 0.1, 0.3):
         model = XGBRegressor(
@@ -1425,7 +1427,7 @@ TREE_GRID = [
     for trees in (200, 500)
 ]
 
-wide_rows: list[dict[str, str | float | None]] = []
+wide_rows: list[dict[str, object]] = []
 for settings in TREE_GRID:
     summary, _ = cross_validate(
         XGBRegressor(random_state=0, **settings), FINAL_COLUMNS, dev, FOLDS
@@ -1515,7 +1517,7 @@ SEARCH = [
 ]
 SEARCH_PARAMS = list(SEARCH[0])
 
-search_rows: list[dict[str, float | None]] = []
+search_rows: list[dict[str, object]] = []
 for settings in SEARCH:
     summary, _ = cross_validate(
         XGBRegressor(random_state=0, **settings), FINAL_COLUMNS, dev, FOLDS
@@ -1571,7 +1573,7 @@ pl.concat(
 
 # %%
 penalty_rng = np.random.default_rng(1)
-lasso_search_rows: list[dict[str, float | None]] = []
+lasso_search_rows: list[dict[str, object]] = []
 for settings in SEARCH:
     alpha = float(10 ** penalty_rng.uniform(-1, 1))
     model = LassoThenXGB(FINAL_COLUMNS, FINAL_LINEAR, alpha=alpha, **settings)
