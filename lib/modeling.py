@@ -47,12 +47,14 @@ class LassoThenXGB:
         the rest standardised. xgb_settings go to XGBRegressor.
         """
         categorical = [
-            i for i, c in enumerate(columns) if c in linear_columns and c in CATEGORICAL
+            i
+            for i, column in enumerate(columns)
+            if column in linear_columns and column in CATEGORICAL
         ]
         numeric = [
             i
-            for i, c in enumerate(columns)
-            if c in linear_columns and c not in CATEGORICAL
+            for i, column in enumerate(columns)
+            if column in linear_columns and column not in CATEGORICAL
         ]
         linear_prep = ColumnTransformer(
             [
@@ -132,23 +134,32 @@ def lear_inputs(hourly: pl.DataFrame) -> pl.DataFrame:
         on="hour", index="date", values=["price_da", "fc_load", "renewables"]
     )
     hours = range(24)
-    days = wide.select("date", *[f"price_da_{h}" for h in hours])
+    days = wide.select("date", *[f"price_da_{hour}" for hour in hours])
     for lag in LEAR_LAG_DAYS:
         shifted = wide.select(
             (pl.col("date") + pl.duration(days=lag)).alias("date"),
-            *[pl.col(f"price_da_{h}").alias(f"lag_price_d{lag}_{h}") for h in hours],
+            *[
+                pl.col(f"price_da_{hour}").alias(f"lag_price_d{lag}_{hour}")
+                for hour in hours
+            ],
         )
         days = days.join(shifted, on="date", how="left")
     for lag in LEAR_EXOG_DAYS:
         shifted = wide.select(
             (pl.col("date") + pl.duration(days=lag)).alias("date"),
-            *[pl.col(f"fc_load_{h}").alias(f"load_d{lag}_{h}") for h in hours],
-            *[pl.col(f"renewables_{h}").alias(f"renew_d{lag}_{h}") for h in hours],
+            *[pl.col(f"fc_load_{hour}").alias(f"load_d{lag}_{hour}") for hour in hours],
+            *[
+                pl.col(f"renewables_{hour}").alias(f"renew_d{lag}_{hour}")
+                for hour in hours
+            ],
         )
         days = days.join(shifted, on="date", how="left")
     weekday = pl.col("date").dt.weekday()
     return days.with_columns(
-        [(weekday == d).cast(pl.Float64).alias(f"weekday_{d}") for d in range(1, 8)]
+        [
+            (weekday == day).cast(pl.Float64).alias(f"weekday_{day}")
+            for day in range(1, 8)
+        ]
     ).sort("date")
 
 
@@ -167,10 +178,14 @@ def lear_forecast(fit: pl.DataFrame, predict: pl.DataFrame) -> np.ndarray:
     train = days.filter(pl.col("date").is_in(fit_dates.implode())).drop_nulls()
     test = days.filter(pl.col("date").is_in(predict["date"].unique().implode()))
 
-    targets = [f"price_da_{h}" for h in range(24)]
-    price_inputs = [c for c in days.columns if c.startswith("lag_price_")]
-    exog_inputs = [c for c in days.columns if c.startswith(("load_", "renew_"))]
-    dummies = [c for c in days.columns if c.startswith("weekday_")]
+    targets = [f"price_da_{hour}" for hour in range(24)]
+    price_inputs = [
+        column for column in days.columns if column.startswith("lag_price_")
+    ]
+    exog_inputs = [
+        column for column in days.columns if column.startswith(("load_", "renew_"))
+    ]
+    dummies = [column for column in days.columns if column.startswith("weekday_")]
 
     prices = train.select(targets).to_numpy().ravel()
     median = float(np.median(prices))
@@ -193,7 +208,7 @@ def lear_forecast(fit: pl.DataFrame, predict: pl.DataFrame) -> np.ndarray:
 
     x_train, x_test = design_matrix(train), design_matrix(test)
     rows: list[pl.DataFrame] = []
-    for h, target in enumerate(targets):
+    for hour, target in enumerate(targets):
         model = LassoLarsIC(criterion="aic", max_iter=2_000)
         model.fit(x_train, stabilise(train[target].to_numpy()))
         pred = np.sinh(model.predict(x_test)) * mad + median
@@ -201,7 +216,7 @@ def lear_forecast(fit: pl.DataFrame, predict: pl.DataFrame) -> np.ndarray:
             pl.DataFrame(
                 {
                     "date": test["date"],
-                    "hour": pl.Series([h] * test.height, dtype=pl.Int8),
+                    "hour": pl.Series([hour] * test.height, dtype=pl.Int8),
                     "lear": pred,
                 }
             )

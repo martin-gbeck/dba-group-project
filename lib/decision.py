@@ -39,3 +39,29 @@ def best_shift(score: pl.Expr) -> pl.Expr:
     complete_day = score.is_not_null().all().over("date")
 
     return (position <= shift_end) & (position > shift_end - SHIFT_HOURS) & complete_day
+
+
+def daily_costs(frame: pl.DataFrame) -> pl.DataFrame:
+    """Each day's cost in EUR, electricity plus premium for 500 MWh, of four shifts:
+    `standard` (06:00 to 14:00), `model` (lowest forecast `pred` plus premium), `rule`
+    (lowest forecast residual load) and `hindsight` (lowest cleared price plus premium).
+    One row per date, in date order."""
+    shifts = ["standard", "model", "rule", "hindsight"]
+    return (
+        frame.with_columns(
+            cost=(pl.col("price_da") + premium())
+            * SHIFT_MW,  # EUR for the hour's 62.5 MWh
+            standard=pl.col("hour").is_between(*STANDARD_SHIFT),
+            model=best_shift(pl.col("pred") + premium()),
+            rule=best_shift(pl.col("fc_residual")),
+            hindsight=best_shift(pl.col("price_da") + premium()),
+        )
+        .group_by("date")
+        .agg(
+            [
+                pl.col("cost").filter(pl.col(shift)).sum().alias(shift)
+                for shift in shifts
+            ]
+        )
+        .sort("date")
+    )

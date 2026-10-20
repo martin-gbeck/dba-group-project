@@ -122,9 +122,24 @@ def summarise_folds(scores: list[Scores]) -> CVScores:
     """Average the validation years' scores and add the SD of the saving share and of MAE
     across those years."""
     table = pl.DataFrame(scores)
-    summary = {k: table[k].mean() for k in table.columns}
+    summary = {column: table[column].mean() for column in table.columns}
     summary["saving_share_fold_sd"] = table["saving_share"].std()
     summary["mae_fold_sd"] = table["mae"].std()
     # the table's columns are exactly the keys of Scores, so the averages plus the two
     # SDs make a CVScores
     return cast(CVScores, summary)
+
+
+def block_bootstrap_means(
+    values: np.ndarray, block_days: int, samples: int = 10_000, seed: int = 0
+) -> np.ndarray:
+    """The means of `samples` resampled series, each as long as `values` and built from runs
+    of `block_days` consecutive values drawn at random with replacement. A run keeps the
+    weekly cycle and the streaks of similar days that drawing single days would break;
+    `block_days=1` draws single days."""
+    n = len(values)
+    rng = np.random.default_rng(seed)
+    runs_per_sample = -(-n // block_days)  # rounded up, then trimmed to n
+    starts = rng.integers(0, n - block_days + 1, size=(samples, runs_per_sample))
+    positions = (starts[:, :, None] + np.arange(block_days)).reshape(samples, -1)[:, :n]
+    return values[positions].mean(axis=1)
