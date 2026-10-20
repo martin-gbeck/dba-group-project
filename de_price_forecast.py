@@ -1269,16 +1269,20 @@ pl.concat([pl.DataFrame(comparison_rows), references], how="diagonal_relaxed").s
 # %% [markdown]
 # ### 5.2 Choosing feature groups
 #
-# Add the feature groups to Lasso-then-XGBoost one at a time, and keep a group only if it wins under rule 1 against the set without it: a saving-share gain beyond the fold SD or, inside that noise, an MAE cut beyond the MAE fold SD.
+# Each feature group is tested on Lasso-then-XGBoost against the same set without it, and kept only if it wins under rule 1: a saving-share gain beyond the larger fold SD or, inside that noise, an MAE cut beyond the larger MAE fold SD. The three groups behind hypotheses H1 to H3 in section 4.2 (calendar, fundamentals and price memory) are each left out of the three-group set once. The level interaction is then added on top of the three, and the neighbour spreads on top of that.
 #
 
 # %% [markdown]
-# Cross-validate Lasso-then-XGBoost on growing sets of feature groups.
+# Cross-validate Lasso-then-XGBoost on single groups, on pairs, on calendar, fundamentals and price memory together, and on those three plus the extra groups.
 #
 
 # %%
 STEPS = [
+    ["calendar"],
+    ["fundamentals"],
     ["calendar", "fundamentals"],
+    ["fundamentals", "price-memory"],
+    ["calendar", "price-memory"],
     ["calendar", "fundamentals", "price-memory"],
     ["calendar", "fundamentals", "price-memory", "level-interaction"],
     ["calendar", "fundamentals", "price-memory", "level-interaction", "neighbour-spreads"],
@@ -1289,10 +1293,10 @@ for groups in STEPS:
     columns = columns_for(groups)
     linear = columns_for(groups, LINEAR_GROUPS)
     summary, _ = cross_validate(LassoThenXGB(columns, linear), columns, dev, FOLDS)
-    group_rows.append({"last_group_added": groups[-1]} | summary)
+    group_rows.append({"feature_groups": "+".join(groups)} | summary)
 
 pl.DataFrame(group_rows).select(
-    "last_group_added",
+    "feature_groups",
     "saving_share",
     "saving_share_fold_sd",
     "right_shift_share",
@@ -1303,7 +1307,13 @@ pl.DataFrame(group_rows).select(
 )
 
 # %% [markdown]
-# Price memory is the step that matters: the saving share rises from 64.4% to 95.8%. Without it the forecast level is wrong, and a wrong level misjudges the 10 EUR/MWh premium against the price. The level interaction adds 0.4 percentage points, inside its fold SD of 0.9, and MAE stays at 19.1 EUR/MWh, so it is dropped; the trees can find that interaction on their own. Neighbour spreads lower the saving share by 0.6 points, inside the noise, and cut MAE from 19.1 to 17.5 EUR/MWh, a gap of 1.6 inside the larger MAE fold SD of 2.6, so under rule 1 they tie on both counts and are dropped as the simpler option.
+# Every set with price memory reaches 95% or more of the possible saving except calendar with price memory (85.5%), and every set without price memory stays at 84% or below.
+#
+# Price memory matters most, and the forecasts only help once it is in, because the two cover different parts of the price. Residual load decides how far up the merit order (the power plants ranked from cheapest to most expensive to run) demand reaches, and so which plant sets the price: that gives the shape of the day. What that plant costs depends mostly on the gas price, which the data does not have, and recent prices stand in for it. Section 3.4 found the price rising 1.1 EUR/MWh per GW of residual load at 2019 prices against 7.1 at 2022 prices, so the same forecast means a different price in each year.
+#
+# Without price memory the model cannot tell those years apart and gets the level wrong, and the level is what the 10 EUR/MWh night and weekend premium is weighed against: a model that expects crisis-level prices sees a small dip in residual load as a saving worth paying the premium for. That is most likely why adding the forecasts to calendar alone drops the saving share from 84.0% to 64.4%. Price memory alone gives the level but not the next day's shape, and calendar with price memory reaches 85.5%. Adding the forecasts lifts it to 95.8%, beyond the larger fold SD of 3.2 points, so fundamentals are kept. Calendar adds 0.5 points to fundamentals and price memory (95.3% to 95.8%), inside the larger fold SD of 0.8, and MAE goes from 18.3 to 19.1 EUR/MWh, inside the larger MAE fold SD of 1.4, so the two tie on both counts. Rule 1 sends a tie to the simpler set, which would drop calendar. It stays because this comparison was run after 2025 had been scored: dropping it now would change the final model after its test, with no untouched year left to score the new one on. A model without calendar would most likely do as well.
+#
+# The level interaction adds 0.4 percentage points, inside the larger fold SD of 0.9, and MAE stays at 19.1 EUR/MWh, so it is dropped: the trees build the product of level and shape from price memory and the forecasts on their own. Neighbour spreads lower the saving share by 0.6 points, inside the noise, and cut MAE from 19.1 to 17.5 EUR/MWh, a gap of 1.6 inside the larger MAE fold SD of 2.6, so under rule 1 they tie on both counts and are dropped as the simpler option.
 #
 #
 
