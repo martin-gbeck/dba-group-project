@@ -1330,7 +1330,7 @@ KEPT_GROUPS = ["calendar", "fundamentals", "price-memory"]
 FINAL_COLUMNS = columns_for(KEPT_GROUPS)
 FINAL_LINEAR = columns_for(KEPT_GROUPS, LINEAR_GROUPS)
 
-tuning_rows: list[dict[str, object]] = []
+lasso_rows: list[dict[str, object]] = []
 for alpha in (0.3, 1.0, 3.0):
     for depth in (3, 6):
         model = LassoThenXGB(
@@ -1342,9 +1342,10 @@ for alpha in (0.3, 1.0, 3.0):
             learning_rate=0.1,
         )
         summary, _ = cross_validate(model, FINAL_COLUMNS, dev, FOLDS)
-        tuning_rows.append({"alpha": alpha, "max_depth": depth} | summary)
+        lasso_rows.append({"alpha": alpha, "max_depth": depth} | summary)
 
-pl.DataFrame(tuning_rows).select(
+lasso_tuning = pl.DataFrame(lasso_rows)
+lasso_tuning.select(
     "alpha",
     "max_depth",
     "saving_share",
@@ -1411,7 +1412,7 @@ xgb_best = (
     .sort("mae")
     .head(1)
 )
-lasso_best = pl.DataFrame(tuning_rows).filter(
+lasso_best = lasso_tuning.filter(
     (pl.col("alpha") == 1.0) & (pl.col("max_depth") == 6)
 )
 
