@@ -1344,8 +1344,8 @@ for alpha in (0.3, 1.0, 3.0):
         summary, _ = cross_validate(model, FINAL_COLUMNS, dev, FOLDS)
         lasso_rows.append({"alpha": alpha, "max_depth": depth} | summary)
 
-lasso_tuning = pl.DataFrame(lasso_rows)
-lasso_tuning.select(
+lassoxgb_tuning = pl.DataFrame(lasso_rows)
+lassoxgb_tuning.select(
     "alpha",
     "max_depth",
     "saving_share",
@@ -1381,8 +1381,8 @@ for depth in (3, 6):
         summary, _ = cross_validate(model, FINAL_COLUMNS, dev, FOLDS)
         xgb_rows.append({"max_depth": depth, "learning_rate": rate} | summary)
 
-xgb_tuning = pl.DataFrame(xgb_rows)
-xgb_tuning.select(
+purexgb_tuning = pl.DataFrame(xgb_rows)
+purexgb_tuning.select(
     "max_depth",
     "learning_rate",
     "saving_share",
@@ -1403,17 +1403,25 @@ xgb_tuning.select(
 #
 
 # %%
-# XGBoost alone: the lowest MAE among settings within the top setting's fold SD
-top = xgb_tuning.sort("saving_share", descending=True).row(0, named=True)
+# each method: the lowest MAE among settings within the top setting's fold SD
+topxgb = purexgb_tuning.sort("saving_share", descending=True).row(0, named=True)
 xgb_best = (
-    xgb_tuning.filter(
-        pl.col("saving_share") >= top["saving_share"] - top["saving_share_fold_sd"]
+    purexgb_tuning.filter(
+        pl.col("saving_share")
+        >= topxgb["saving_share"] - topxgb["saving_share_fold_sd"]
     )
     .sort("mae")
     .head(1)
 )
-lasso_best = lasso_tuning.filter(
-    (pl.col("alpha") == 1.0) & (pl.col("max_depth") == 6)
+
+toplasso = lassoxgb_tuning.sort("saving_share", descending=True).row(0, named=True)
+lasso_best = (
+    lassoxgb_tuning.filter(
+        pl.col("saving_share")
+        >= toplasso["saving_share"] - toplasso["saving_share_fold_sd"]
+    )
+    .sort("mae")
+    .head(1)
 )
 
 pl.concat(
