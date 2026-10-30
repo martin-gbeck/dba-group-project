@@ -1877,11 +1877,13 @@ pl.DataFrame(
 #
 # The noise used to judge ties in section 5 is the fold SD, which comes from just two numbers, one per validation year. 2025 allows a sharper check of the lead, because the model and the rule each pick a shift on the same 365 days, and each day gives one number:
 #
-# - `daily_lead`: the cost of the rule's shift minus the cost of the model's, in EUR for that day's 500 MWh. Positive when the model's shift was cheaper. Its mean times 365 is the 105,000 EUR a year from section 7.1.
+# - `daily_lead`: the cost of the shift the residual-load rule picked minus the cost of the shift the model picked, both at the cleared price, in EUR for that day's 500 MWh. Positive when the model's shift was cheaper. Its mean times 365 is the 105,000 EUR a year from section 7.1.
 #
-# The question is whether a mean that size could come from luck in which days 2025 happened to bring. So the year is resampled 10,000 times with `block_bootstrap_means`, and the middle 95% of the resampled means is the 95% interval. Neighbouring days are alike, through the weekly cycle and spells of similar weather. Drawing single days would treat them as independent and make the interval too narrow, so each resample strings together runs of consecutive days. Three run lengths show whether the answer depends on that choice: 1 day (single days, for comparison), 7 days and 30 days.
+# The question is whether a mean that size could come from luck in which days 2025 happened to bring. To check, `block_bootstrap_means` builds 10,000 resampled years out of 2025's own days. Each one picks a random start day, with replacement, and takes it plus the days after it as one run, so a 7-day run is the start day and the 6 after it. It adds runs until it has at least 365 days, cuts the last run short to land on exactly 365, and averages the daily lead over those days. With 7-day runs that is 52 full runs plus 1 day from a 53rd. Some days come up twice and others not at all, so each resample gives one lead the year could plausibly have produced. Runs are used instead of single days because neighbouring days are alike, through the weekly cycle and spells of similar weather, and drawing single days would treat them as independent and make the spread too narrow. Three run lengths show whether the answer depends on that choice: 1 day (single days, for comparison), 7 days and 30 days.
 #
-# - `lead_eur_per_year`: the mean daily lead times 365.
+# The 10,000 resampled leads are then sorted from lowest to highest. Cutting the lowest 250 and the highest 250 (2.5% at each end) leaves 9,500, and the lowest and highest of those are the two ends of the 95% interval.
+#
+# - `lead_eur_per_year`: the mean daily lead (xgb_saving - resid_rule_saving) times 365.
 # - `low_95`, `high_95`: the 2.5th and 97.5th percentiles of the resampled means, times 365. If `low_95` is above 0, the lead is unlikely to be luck.
 # - `at_or_below_0_share`: the share of resamples in which the model did no better than the rule, which works roughly like a one-sided p-value.
 #
@@ -1902,7 +1904,7 @@ for block_days in (1, 7, 30):
     lead_rows.append(
         {
             "block_days": block_days,
-            "lead_eur_per_year": float(daily_lead.mean() * 365),
+            "actual_lead": float(daily_lead.mean() * 365),
             "low_95": float(np.percentile(yearly_means, 2.5)),
             "high_95": float(np.percentile(yearly_means, 97.5)),
             "at_or_below_0_share": float((yearly_means <= 0).mean()),
@@ -1911,7 +1913,7 @@ for block_days in (1, 7, 30):
 pl.DataFrame(lead_rows)
 
 # %% [markdown]
-# With runs of 1 or 7 days, the 95% interval for the lead runs from about 8,000 to 220,000 EUR a year and stays above 0; 30-day runs pull its low end down to -1,500. The model is no better than the rule in under 3% of resamples at every run length. So the 2025 lead is unlikely to be luck, but its size is very uncertain: anything from almost nothing to twice the 105,000 EUR fits the data.
+# With runs of 1 or 7 days, the 95% interval for the lead runs from about 8,000 to 220,000 EUR a year and stays above 0; 30-day runs pull its low end down to -1,500. The model beats the rule in more than 97% of resamples at every run length. So the 2025 lead is unlikely to be luck, but its size is very uncertain: anything from almost nothing to twice the 105,000 EUR fits the data.
 #
 
 # %% [markdown]
@@ -1919,7 +1921,7 @@ pl.DataFrame(lead_rows)
 #
 # Ranked by how much each matters for the decision:
 #
-# 1. The forecast beats the residual-load rule: by 1.5 percentage points in CV, just beyond its fold SD of 1.2, and by 2.3 points on 2025, about 105,000 EUR a year for this plant. The lead is unlikely to be luck, since the model is no better than the rule in under 3% of resamples of 2025 (section 7.2), but its size is uncertain: the 95% interval runs from about 0 to 240,000 EUR a year.
+# 1. The forecast beats the residual-load rule: by 1.5 percentage points in CV, just beyond its fold SD of 1.2, and by 2.3 points on 2025, about 105,000 EUR a year for this plant. The lead is unlikely to be luck, since the model beats the rule in more than 97% of resamples of 2025 (section 7.2), but its size is uncertain: the 95% interval runs from about 0 to 240,000 EUR a year.
 # 2. That gain is small next to the decision itself. Choosing the shift at all, even by the residual-load rule, is worth 4.2 million EUR a year against a fixed 06:00 shift, about 40 times the model's extra 105,000.
 # 3. LEAR, the field's standard linear model for day-ahead prices, gets 93.5% of the possible saving on the folds against the final model's 95.6%, a gap beyond the noise, so the final model beats the method the field uses as its standard.
 # 4. Price memory is the feature group that matters. Neither the Lasso stage nor the neighbour spreads helps by more than the noise, so the simpler model goes forward. In both random searches the best settings score about the same, so the exact settings matter little.
@@ -2004,7 +2006,7 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# On the reserve the interval runs from -11,000 to 141,000 EUR a year, and in 6% of resamples the model is no better than the rule. Nine months are too few to tell the smaller 2026 lead apart from luck.
+# On the reserve the interval runs from -11,000 to 141,000 EUR a year, and the model beats the rule in only 94% of resamples. Nine months are too few to tell the smaller 2026 lead apart from luck.
 #
 
 # %% [markdown]
@@ -2132,7 +2134,7 @@ low, high = min(values) - 5, max(values) + 5
 #
 # Limitations, ranked by how much they could change the answer:
 #
-# 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. In practice a buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time.
+# 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. In practice a buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time. The residual-load rule is built from the same forecasts and would need the same purchase, so the timing does not favour either way of choosing the shift.
 # 2. The lead over the residual-load rule is a narrow call. Within 2025 it is unlikely to be luck, but its 95% interval runs from about 0 to 240,000 EUR a year (section 7.2). On the 2026 reserve it cannot be told apart from luck, and each fold SD rests on just two numbers, so whether the lead holds from year to year is uncertain.
 # 3. Spikes are missed: hours above 200 EUR/MWh by about 89 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low.
 # 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, assuming its 62.5 MW does not move the market price.
