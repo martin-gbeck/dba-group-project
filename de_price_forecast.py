@@ -51,6 +51,7 @@
 # - 8\. In practice
 #     - 8.1 Savings through 2025
 #     - 8.2 One day of the decision
+#     - 8.3 Fixing the week in advance
 # - Conclusion
 #
 # ## Objective
@@ -2230,6 +2231,12 @@ low, high = min(values) - 5, max(values) + 5
 
 # %% [markdown]
 # On 2025-03-06 the model's shift, 08:00 to 16:00, is also the cheapest one. Its forecast runs 7 to 69 EUR/MWh too high in every hour and misses how deep the midday solar dip goes, but it gets the shape of the day right, which is all the decision uses.
+#
+
+# %% [markdown]
+# ### 8.3 Fixing the week in advance
+#
+# A crew roster usually needs more than a day's notice. `week_ahead.ipynb` fixes all seven shifts on the Sunday before, with the final model and its settings unchanged but only the inputs known that early: the calendar and prices up to that Sunday, and no load, wind or solar forecasts. On 2025 it gets 90.7% of the possible saving, 4.05 million EUR a year against the standard shift. That is about 230,000 EUR a year less than choosing each day the day before, and a million more than last year's profile.
 #
 
 # %% [markdown]
