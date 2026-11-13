@@ -65,3 +65,157 @@ def daily_costs(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .sort("date")
     )
+
+
+# Arbeitszeitgesetz §5: at least 11 hours off between the end of one shift and the
+# start of the next. With 8-hour shifts a day apart, a start may be at most 5 hours
+# earlier than the day before's
+MIN_REST_HOURS = 11
+EARLIEST_START_AFTER = SHIFT_HOURS + MIN_REST_HOURS - 24  # -5: start_next - start_prev
+
+
+def shift_windows(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
+    """Every possible shift of each day, in date order and, within a day, in the order
+    `best_shift` scans them: `date`, `start` (the German hour the shift starts),
+    `cost` (EUR of electricity plus premium for its 500 MWh at the cleared price) and,
+    for each named score, its total over the shift's 8 hours."""
+    position = pl.int_range(pl.len()).over("date")
+    totals = {
+        name: score.rolling_sum(SHIFT_HOURS).over("date")
+        for name, score in scores.items()
+    }
+    return (
+        frame.sort("utc_timestamp")
+        .with_columns(
+            start=pl.col("hour").shift(SHIFT_HOURS - 1).over("date"),
+            cost=((pl.col("price_da") + premium()) * SHIFT_MW)
+            .rolling_sum(SHIFT_HOURS)
+            .over("date"),
+            **totals,
+        )
+        .filter(position >= SHIFT_HOURS - 1)  # windows that end inside the day
+        .select("date", "start", "cost", *scores)
+    )
+
+
+def pick_freely(windows: pl.DataFrame, score: str) -> pl.DataFrame:
+    """Each day's window with the lowest `score`, the first one on a tie, as `best_shift`
+    picks it. One row of `windows` per date."""
+    is_lowest = pl.int_range(pl.len()).over("date") == pl.col(score).arg_min().over(
+        "date"
+    )
+    return windows.filter(is_lowest)
+
+
+def pick_with_rest(windows: pl.DataFrame, score: str) -> pl.DataFrame:
+    """Each day's shift, chosen in date order the day before: the window with the lowest
+    `score` among those starting at least 11 hours after the previous day's chosen
+    shift ends. The first day is free. One row of `windows` per date."""
+    picks: list[pl.DataFrame] = []
+    previous_start: int | None = None
+    for day in windows.partition_by("date", maintain_order=True):
+        allowed = (
+            day
+            if previous_start is None
+            else day.filter(pl.col("start") >= previous_start + EARLIEST_START_AFTER)
+        )
+        pick = allowed.pipe(pick_freely, score)
+        previous_start = pick["start"].item()
+        picks.append(pick)
+    return pl.concat(picks)
+
+
+def cheapest_with_rest(windows: pl.DataFrame) -> pl.DataFrame:
+    """The sequence of shifts with the lowest total `cost` over the whole period in which
+    every shift starts at least 11 hours after the one before ends: hindsight under the
+    rest rule, found by dynamic programming over the days. One row of `windows` per
+    date."""
+    days = windows.partition_by("date", maintain_order=True)
+    # best[d][w]: the lowest total cost from the first day to day d that ends on window w
+    # of day d; came_from[d][w]: the window of day d-1 that total runs through
+    best: list[list[float]] = [days[0]["cost"].to_list()]
+    came_from: list[list[int]] = [[-1] * days[0].height]
+    for d in range(1, len(days)):
+        previous_starts = days[d - 1]["start"].to_list()
+        best_today: list[float] = []
+        from_today: list[int] = []
+        for start, cost in zip(days[d]["start"], days[d]["cost"], strict=True):
+            allowed = [
+                k
+                for k, previous_start in enumerate(previous_starts)
+                if start >= previous_start + EARLIEST_START_AFTER
+            ]
+            k = min(allowed, key=lambda k: best[d - 1][k])
+            best_today.append(best[d - 1][k] + cost)
+            from_today.append(k)
+        best.append(best_today)
+        came_from.append(from_today)
+    # walk back from the cheapest last window
+    w = min(range(len(best[-1])), key=lambda w: best[-1][w])
+    chosen: list[int] = []
+    for d in range(len(days) - 1, -1, -1):
+        chosen.append(w)
+        w = came_from[d][w]
+    chosen.reverse()
+    return pl.concat([day[w] for day, w in zip(days, chosen, strict=True)])
+
+
+def count_rest_breaks(picks: pl.DataFrame) -> int:
+    """The number of days whose shift starts less than 11 hours after the previous
+    calendar day's shift ends. `picks` holds one row per date with `date` and `start`."""
+    ordered = picks.sort("date")
+    follows_previous_day = pl.col("date").diff().dt.total_days() == 1
+    too_early = pl.col("start").diff() < EARLIEST_START_AFTER
+    return ordered.filter(follows_previous_day & too_early).height
+
+
+def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
+    """For each named score and for hindsight, the rest breaks of its free schedule and
+    what the rest rule costs. One row per schedule:
+
+    - `rest_breaks`, `rest_break_share`: days that start too soon after the day before,
+      as a count and as a share of all days.
+    - `saving_share`, `saving_share_rest`: `(standard - picked) / (standard - hindsight)`
+      from the period's total costs, picked freely, then picked under the rest rule
+      against hindsight under the rest rule.
+    - `saving_eur_per_year`: the free schedule's saving against the standard 06:00
+      shift, over a year; `rest_eur_per_year`: the change in that saving under the rest
+      rule, negative when the rule costs money.
+
+    Each score picks the lowest total over 8 hours, so add the premium to a price
+    forecast before passing it."""
+    windows = frame.pipe(shift_windows, scores)
+    # the pickers skip a day without scores and chain the rule across a gap, which
+    # would score such a period wrongly, so refuse it
+    has_missing = pl.any_horizontal(pl.col("cost", *scores).is_null()).any()
+    if windows.select(has_missing).item():
+        raise ValueError("a day has missing prices or scores")
+    dates = windows["date"].unique().sort()
+    if (dates.diff().drop_nulls().dt.total_days() != 1).any():
+        raise ValueError("rest_check needs consecutive days")
+    days = windows["date"].n_unique()
+    free_picks = {name: windows.pipe(pick_freely, name) for name in scores}
+    rest_picks = {name: windows.pipe(pick_with_rest, name) for name in scores}
+    free_picks["hindsight"] = windows.pipe(pick_freely, "cost")
+    rest_picks["hindsight"] = windows.pipe(cheapest_with_rest)
+    # each schedule's total cost over the period in EUR. Series.sum() is typed as any
+    # number, Decimal included, and a cost column is always a float
+    free_cost = {name: float(picks["cost"].sum()) for name, picks in free_picks.items()}
+    rest_cost = {name: float(picks["cost"].sum()) for name, picks in rest_picks.items()}
+    standard = float(windows.filter(pl.col("start") == STANDARD_SHIFT[0])["cost"].sum())
+    rows = [
+        {
+            "schedule": name,
+            "days": days,
+            "rest_breaks": count_rest_breaks(free_picks[name]),
+            "rest_break_share": count_rest_breaks(free_picks[name]) / days,
+            "saving_share": (standard - free_cost[name])
+            / (standard - free_cost["hindsight"]),
+            "saving_share_rest": (standard - rest_cost[name])
+            / (standard - rest_cost["hindsight"]),
+            "saving_eur_per_year": (standard - free_cost[name]) / days * 365,
+            "rest_eur_per_year": (free_cost[name] - rest_cost[name]) / days * 365,
+        }
+        for name in free_picks
+    ]
+    return pl.DataFrame(rows)

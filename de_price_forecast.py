@@ -52,6 +52,7 @@
 #     - 8.1 Savings through 2025
 #     - 8.2 One day of the decision
 #     - 8.3 Fixing the week in advance
+#     - 8.4 Rest between shifts
 # - Conclusion
 #
 # ## Objective
@@ -99,7 +100,7 @@ from plotnine import (
 from xgboost import XGBRegressor
 
 from lib.data_schemas import CombinedDataSchema
-from lib.decision import best_shift, daily_costs, premium
+from lib.decision import best_shift, daily_costs, premium, rest_check
 from lib.evaluation import (
     Scores,
     best_setting,
@@ -1169,6 +1170,7 @@ pl.DataFrame(
 # - `df_to_np(frame, columns)`, in `lib/modeling.py`, turns the named columns into the number matrix a model takes.
 # - `AsinhTarget(model)`, in `lib/modeling.py` and used in section 6, fits the model on asinh(price) and converts its predictions back with sinh.
 # - `daily_costs(frame)`, in `lib/decision.py` and used from section 7.2, gives each day's cost in EUR, electricity plus premium for 500 MWh, of four shifts: the standard 06:00 shift, the one with the lowest forecast price plus premium (`model`), the one with the lowest forecast residual load (`rule`) and the cheapest in hindsight.
+# - `rest_check(frame, scores)`, in `lib/decision.py` and used in section 8.4, counts how often each schedule starts a shift less than 11 hours after the day before's ends, and scores each one again with that rest rule kept.
 # - `block_bootstrap_means(values, block_days)`, in `lib/evaluation.py` and used in section 7.2, resamples a daily series 10,000 times, each time stringing together runs of `block_days` consecutive days drawn at random with replacement, and returns the mean of each resample.
 #
 
@@ -2240,6 +2242,61 @@ low, high = min(values) - 5, max(values) + 5
 #
 
 # %% [markdown]
+# ### 8.4 Rest between shifts
+#
+# German law (Arbeitszeitgesetz §5) requires 11 hours off between two shifts. A shift starting at `start` ends at `start + 8`, so the rest before the next day's shift is `next_start + 24 - (start + 8)`, and the rule breaks when a shift starts more than 5 hours earlier than the day before's. Choosing each day freely ignores this, so the check counts how often each schedule breaks it and what keeping it costs:
+#
+# - `rest_breaks`, `rest_break_share`: days in 2025 whose shift starts too soon after the day before's, as a count and as a share of the year's days. `rest_breaks_validation`, `rest_break_share_validation`: the same over 2023 and 2024 together, from the out-of-fold forecasts of section 6.
+# - `saving_share`: as in section 7.1, from the free choice.
+# - `saving_share_rest`: the same share with the rule kept. Each day the method picks its cheapest shift among those starting at least 11 hours after the day before's shift ends, which fits a choice made at 11:55 on D-1, when yesterday's shift is fixed. Hindsight under the rule is the cheapest sequence of shifts over the whole year that never breaks it, found by dynamic programming, so `saving_share_rest` compares each method with the best a rest-keeping schedule could do.
+# - `saving_eur_per_year`: the free choice's saving against the standard 06:00 shift, as in section 7.1. `rest_eur_per_year`: how that saving changes when the rule is kept, in EUR a year, negative when the rule costs money. The standard shift starts at 06:00 every day and never breaks the rule.
+#
+# The rule compares clock hours, so on the two clock-change days a year the real rest is one hour shorter (March) or longer (October) than counted.
+#
+
+# %% [markdown]
+# Count the rest breaks of each schedule on 2025 and on the validation years, and score each schedule with the rule kept.
+#
+
+# %%
+REST_SCORES = {
+    "final-model": pl.col("pred") + premium(),
+    "residual-load-rule": pl.col("fc_residual"),
+}
+rest_2025 = test_frame.pipe(rest_check, REST_SCORES)
+# each validation year on its own, so no schedule runs across the gap between folds
+rest_validation = (
+    pl.concat(
+        [
+            oof.filter(pl.col("year") == year).pipe(rest_check, REST_SCORES)
+            for year in FOLDS.values()
+        ]
+    )
+    .group_by("schedule", maintain_order=True)
+    .agg(
+        rest_breaks_validation=pl.col("rest_breaks").sum(),
+        rest_break_share_validation=pl.col("rest_breaks").sum() / pl.col("days").sum(),
+    )
+)
+rest_2025.join(rest_validation, on="schedule").select(
+    "schedule",
+    "rest_breaks",
+    "rest_break_share",
+    "rest_breaks_validation",
+    "rest_break_share_validation",
+    "saving_share",
+    "saving_share_rest",
+    "saving_eur_per_year",
+    "rest_eur_per_year",
+)
+
+# %% [markdown]
+# The final model breaks the rest rule on 27 days of 2025, 7.4% of the year, and on 71 days of the validation years, 9.7%. The residual-load rule breaks it on 43 days and hindsight on 26: on about one day in 14, the cheapest shift starts more than 5 hours earlier than the day before's, whoever picks it.
+#
+# Keeping the rule lowers the model's saving by about 279,000 EUR a year, to 4.01 million, and its saving share to 91.7% of what a rest-keeping hindsight saves. Hindsight loses only 97,000, because it plans the whole year at once. Choosing one day at a time, the model cannot see that a late shift today rules out a cheap early shift tomorrow. The rule costs the residual-load rule more, 453,000 EUR a year, and with rest kept the model leads it by about 257,000 EUR a year instead of 83,000.
+#
+
+# %% [markdown]
 # ## Conclusion
 #
 # The forecast is good enough to schedule the plant's shift. On 2025, a full year it never saw, its chosen shifts capture 95.9% of the possible saving against a standard 06:00 shift: about 4.29 million EUR for 500 MWh a day, and 83,000 EUR a year more than choosing the shift by forecast residual load alone. The model is a two-stage Lasso-then-XGBoost on calendar, forecast and recent-price features: a Lasso fits the steady daily and weekly pattern, and XGBoost fits what the Lasso gets wrong. It was chosen over XGBoost alone and LEAR, the field's standard linear model, under fixed rules that compare options year by year. Most of the money comes from choosing the shift at all; the forecast's own share is the last 1.8 percentage points, a lead that held in both validation years. The 2026 reserve agrees, with a lead of 1.3 points.
@@ -2250,6 +2307,7 @@ low, high = min(values) - 5, max(values) + 5
 # 2. The lead over the residual-load rule is a narrow call. Within 2025 and within the 2026 reserve it is unlikely to be luck, but its 95% interval on 2025 runs from about 0 to 200,000 EUR a year (section 7.2), and the comparison between years rests on two validation years, so how large the lead is from year to year is uncertain.
 # 3. Spikes are missed: hours above 200 EUR/MWh by about 91 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low.
 # 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, assuming its 62.5 MW does not move the market price.
-# 5. No fuel price and no public holidays are in the data, so the level comes from recent prices alone.
-# 6. LEAR was refitted once a year rather than daily as published, which likely understates it.
+# 5. Choosing each day freely breaks the legal 11 hours of rest between shifts on 7.4% of 2025's days. Keeping the rest rule lowers the saving to 4.01 million EUR a year, still about 257,000 more than the residual-load rule under the same rule (section 8.4).
+# 6. No fuel price and no public holidays are in the data, so the level comes from recent prices alone.
+# 7. LEAR was refitted once a year rather than daily as published, which likely understates it.
 #

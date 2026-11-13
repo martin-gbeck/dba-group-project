@@ -23,6 +23,7 @@
 # - 2\. Data and features
 # - 3\. The model
 # - 4\. Scores
+# - 5\. Rest between shifts
 # - What a week's notice costs
 #
 # ## Objective
@@ -57,6 +58,7 @@ import numpy as np
 import polars as pl
 
 from lib.data_schemas import CombinedDataSchema
+from lib.decision import premium, rest_check
 from lib.evaluation import Scores, cross_validate, evaluate, summarise_folds
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
 from lib.modeling import LassoThenXGB, df_to_np
@@ -354,10 +356,15 @@ models = {
 # %%
 validation: dict[str, Scores] = {}
 test_scores: dict[str, Scores] = {}
+validation_forecasts: dict[str, pl.DataFrame] = {}  # out-of-fold, 2023 and 2024
+test_forecasts: dict[str, np.ndarray] = {}
 for name, (model, columns, dev) in models.items():
-    validation[name], _ = cross_validate(model, columns, dev, FOLDS)
+    validation[name], validation_forecasts[name] = cross_validate(
+        model, columns, dev, FOLDS
+    )
     _ = model.fit(df_to_np(dev, columns), dev["price_da"].to_numpy())
-    test_scores[name] = evaluate(test_2025, model.predict(df_to_np(test_2025, columns)))
+    test_forecasts[name] = model.predict(df_to_np(test_2025, columns))
+    test_scores[name] = evaluate(test_2025, test_forecasts[name])
 
 # %% [markdown]
 # Score the two references the same way: on each validation year, then on 2025, each year's profile taken from the year before it.
@@ -419,6 +426,77 @@ pl.DataFrame(
 #
 
 # %% [markdown]
+# ## 5. Rest between shifts
+#
+# German law (Arbeitszeitgesetz §5) requires 11 hours off between two shifts, so a shift may start at most 5 hours earlier than the day before's. Section 8.4 of the main notebook counts how often the day-ahead schedules break this and what keeping it costs; this section adds the week-ahead schedule, with the same columns:
+#
+# - `rest_breaks`, `rest_break_share`: days in 2025 whose shift starts less than 11 hours after the day before's ends, as a count and as a share of the year's days. `rest_breaks_validation`, `rest_break_share_validation`: the same over 2023 and 2024 together, from the out-of-fold forecasts.
+# - `saving_share`: from the free choice, as in section 4.
+# - `saving_share_rest`: the same share with the rule kept. Each day takes its cheapest forecast shift among those that start at least 11 hours after the previous day's shift ends. A week-ahead plan is made in one go on the Sunday, but Sunday's own shift was fixed the week before, so day by day in date order gives the same constraint. Hindsight under the rule is the cheapest sequence over the whole year that never breaks it, found by dynamic programming.
+# - `saving_eur_per_year`: the free choice's saving against the standard 06:00 shift. `rest_eur_per_year`: how that saving changes when the rule is kept, negative when the rule costs money.
+#
+# The rule compares clock hours, so on the two clock-change days a year the real rest is one hour shorter (March) or longer (October) than counted.
+#
+
+# %% [markdown]
+# Count the rest breaks of each schedule on 2025 and on the validation years, and score each one with the rule kept.
+#
+
+# %%
+test_rest_frame = test_2025.with_columns(
+    day_ahead=pl.Series(test_forecasts["day-ahead"]),
+    week_ahead=pl.Series(test_forecasts["week-ahead"]),
+)
+REST_SCORES = {
+    "day-ahead": pl.col("day_ahead") + premium(),
+    "week-ahead": pl.col("week_ahead") + premium(),
+    "residual-load-rule": pl.col("fc_residual"),
+}
+rest_2025 = test_rest_frame.pipe(rest_check, REST_SCORES)
+
+# the two models' validation rows differ in their first days of 2019, never in 2023 or
+# 2024, so the forecasts line up on the timestamp
+validation_rest_frame = (
+    validation_forecasts["day-ahead"]
+    .rename({"pred": "day_ahead"})
+    .join(
+        validation_forecasts["week-ahead"].select("utc_timestamp", week_ahead="pred"),
+        on="utc_timestamp",
+    )
+)
+# each validation year on its own, so no schedule runs across the gap between folds
+rest_validation = (
+    pl.concat(
+        [
+            validation_rest_frame.filter(pl.col("year") == year).pipe(
+                rest_check, REST_SCORES
+            )
+            for year in FOLDS.values()
+        ]
+    )
+    .group_by("schedule", maintain_order=True)
+    .agg(
+        rest_breaks_validation=pl.col("rest_breaks").sum(),
+        rest_break_share_validation=pl.col("rest_breaks").sum() / pl.col("days").sum(),
+    )
+)
+rest_2025.join(rest_validation, on="schedule").select(
+    "schedule",
+    "rest_breaks",
+    "rest_break_share",
+    "rest_breaks_validation",
+    "rest_break_share_validation",
+    "saving_share",
+    "saving_share_rest",
+    "saving_eur_per_year",
+    "rest_eur_per_year",
+)
+
+# %% [markdown]
+# The week-ahead schedule breaks the rest rule on 12 days of 2025 (3.3%) and on 40 validation days (5.5%), about half as often as the day-ahead model. Keeping the rule costs it 129,000 EUR a year, against 279,000 for the day-ahead model. With rest kept on both, choosing each day the day before saves about 83,000 EUR a year more than fixing the week on Sunday, instead of about 230,000.
+#
+
+# %% [markdown]
 # ## What a week's notice costs
 #
 # Fixing all seven shifts on the Sunday before keeps most of the saving.
@@ -427,4 +505,5 @@ pl.DataFrame(
 # 2. Last year's profile, a schedule that needs no forecast at all, saves 3.05 million on 2025. The week-ahead model closes 81% of the gap between that floor and the day-ahead model on 2025, and 74% on the validation years.
 # 3. What it gives up is the weather. No wind or solar forecast in this data reaches a week ahead, and a week-ahead weather forecast is the input most likely to win back part of the 230,000.
 # 4. The model was not retuned for the longer horizon, so these figures are a cautious estimate of what a week-ahead schedule can do.
+# 5. With the legal 11 hours of rest between shifts kept, a week's notice costs about 83,000 EUR a year instead of 230,000 (section 5). The day-ahead schedule breaks that rule on 7.4% of 2025's days and the week-ahead one on 3.3%, and keeping it costs the day-ahead schedule more.
 #
