@@ -4,6 +4,7 @@ Every function works on the hourly table built in notebook section 4.2, which ca
 `date`, `hour` and `weekday`.
 """
 
+import numpy as np
 import polars as pl
 
 SHIFT_HOURS = 8
@@ -160,6 +161,22 @@ def cheapest_with_rest(windows: pl.DataFrame) -> pl.DataFrame:
     return pl.concat([day[w] for day, w in zip(days, chosen, strict=True)])
 
 
+def complete_shift_windows(
+    frame: pl.DataFrame, scores: dict[str, pl.Expr]
+) -> pl.DataFrame:
+    """`shift_windows`, refusing a period with a missing price or score or a gap in the
+    dates. The pickers skip a day without scores and chain the rest rule across a gap,
+    which would score such a period wrongly."""
+    windows = frame.pipe(shift_windows, scores)
+    has_missing = pl.any_horizontal(pl.col("cost", *scores).is_null()).any()
+    if windows.select(has_missing).item():
+        raise ValueError("a day has missing prices or scores")
+    dates = windows["date"].unique().sort()
+    if (dates.diff().drop_nulls().dt.total_days() != 1).any():
+        raise ValueError("the period needs consecutive days")
+    return windows
+
+
 def count_rest_breaks(picks: pl.DataFrame) -> int:
     """The number of days whose shift starts less than 11 hours after the previous
     calendar day's shift ends. `picks` holds one row per date with `date` and `start`."""
@@ -184,15 +201,7 @@ def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
 
     Each score picks the lowest total over 8 hours, so add the premium to a price
     forecast before passing it."""
-    windows = frame.pipe(shift_windows, scores)
-    # the pickers skip a day without scores and chain the rule across a gap, which
-    # would score such a period wrongly, so refuse it
-    has_missing = pl.any_horizontal(pl.col("cost", *scores).is_null()).any()
-    if windows.select(has_missing).item():
-        raise ValueError("a day has missing prices or scores")
-    dates = windows["date"].unique().sort()
-    if (dates.diff().drop_nulls().dt.total_days() != 1).any():
-        raise ValueError("rest_check needs consecutive days")
+    windows = frame.pipe(complete_shift_windows, scores)
     days = windows["date"].n_unique()
     free_picks = {name: windows.pipe(pick_freely, name) for name in scores}
     rest_picks = {name: windows.pipe(pick_with_rest, name) for name in scores}
@@ -218,4 +227,88 @@ def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
         }
         for name in free_picks
     ]
+    return pl.DataFrame(rows)
+
+
+def pick_near_plan(
+    windows: pl.DataFrame,
+    score: str,
+    plan: pl.DataFrame,
+    earlier: int,
+    later: int,
+    keep_rest: bool,
+) -> pl.DataFrame:
+    """Each day's window with the lowest `score` among those starting from `earlier`
+    hours before to `later` hours after that day's planned start. `plan` holds one row
+    per date with `date` and `start`, as the pickers return it. With `keep_rest`, the
+    days are picked in date order as `pick_with_rest` does, which always finds a start
+    when the plan itself keeps the rest rule: the planned start plus `later` is never
+    too early. One row of `windows` per date."""
+    planned = plan.select("date", planned_start="start")
+    in_reach = pl.col("start").is_between(
+        pl.col("planned_start") - earlier, pl.col("planned_start") + later
+    )
+    near = windows.join(planned, on="date").filter(in_reach).drop("planned_start")
+    if keep_rest:
+        return near.pipe(pick_with_rest, score)
+    return near.pipe(pick_freely, score)
+
+
+def flex_check(
+    frame: pl.DataFrame,
+    plan_score: pl.Expr,
+    final_score: pl.Expr,
+    reaches: dict[str, tuple[int, int]],
+) -> pl.DataFrame:
+    """Plan each day's shift with `plan_score`, then move it with `final_score` to the
+    cheapest start within reach of the plan. `reaches` maps a name to how many hours
+    the start may move earlier and later. Each reach is scored twice, choosing freely
+    and keeping the rest rule, where the plan also keeps it. One row per reach and
+    setting:
+
+    - `reach`, `earlier`, `later`, `keep_rest`: the reach and the setting.
+    - `saving_share`: `(standard - picked) / (standard - hindsight)` from the period's
+      total costs, against free hindsight, or hindsight under the rest rule when
+      `keep_rest`, as in `rest_check`.
+    - `saving_eur_per_year`: the saving against the standard 06:00 shift, over a year.
+    - `moved_share`, `mean_move_hours`: the share of days whose final start differs
+      from the planned one, and the mean distance moved in hours.
+
+    Add the premium to a price forecast before passing it, as for `rest_check`."""
+    windows = frame.pipe(
+        complete_shift_windows, {"plan": plan_score, "final": final_score}
+    )
+    days = windows["date"].n_unique()
+    standard = float(windows.filter(pl.col("start") == STANDARD_SHIFT[0])["cost"].sum())
+    hindsight = {
+        False: float(windows.pipe(pick_freely, "cost")["cost"].sum()),
+        True: float(windows.pipe(cheapest_with_rest)["cost"].sum()),
+    }
+    rows: list[dict[str, str | int | bool | float]] = []
+    for keep_rest in (False, True):
+        plan = (
+            windows.pipe(pick_with_rest, "plan")
+            if keep_rest
+            else windows.pipe(pick_freely, "plan")
+        )
+        for name, (earlier, later) in reaches.items():
+            picks = windows.pipe(
+                pick_near_plan, "final", plan, earlier, later, keep_rest
+            )
+            cost = float(picks["cost"].sum())
+            # both in date order, one row a day
+            move = picks["start"].to_numpy() - plan["start"].to_numpy()
+            rows.append(
+                {
+                    "reach": name,
+                    "earlier": earlier,
+                    "later": later,
+                    "keep_rest": keep_rest,
+                    "saving_share": (standard - cost)
+                    / (standard - hindsight[keep_rest]),
+                    "saving_eur_per_year": (standard - cost) / days * 365,
+                    "moved_share": float(np.mean(move != 0)),
+                    "mean_move_hours": float(np.abs(move).mean()),
+                }
+            )
     return pl.DataFrame(rows)

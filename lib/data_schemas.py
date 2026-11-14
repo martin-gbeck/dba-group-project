@@ -30,7 +30,7 @@ PRICE_CEILING = 4000.0
 class CombinedDataSchema(pa.DataFrameModel):
     """One row per delivery hour: the target, its fundamentals, the neighbours, the calendar."""
 
-    class Config(BaseConfig):  # ty: ignore[invalid-mutable-override]
+    class Config(BaseConfig):  # ty: ignore[incompatible-attribute-override]
         """Cast every column to its declared type and drop the columns the model does not list."""
 
         coerce = True

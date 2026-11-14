@@ -9,7 +9,9 @@ from lib.decision import (
     best_shift,
     cheapest_with_rest,
     count_rest_breaks,
+    flex_check,
     pick_freely,
+    pick_near_plan,
     pick_with_rest,
     premium,
     rest_check,
@@ -164,3 +166,65 @@ def test_rest_check_refuses_a_gap_in_the_dates():
     )
     with pytest.raises(ValueError, match="consecutive"):
         frame.pipe(rest_check, score(frame))
+
+
+def plan_at(starts: list[int]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "date": [MONDAY + timedelta(days=d) for d in range(len(starts))],
+            "start": starts,
+        }
+    )
+
+
+def test_pick_near_plan_moves_only_within_reach():
+    # the cheapest shifts start at 14 and 0, the plan says 6 and 6
+    frame = days_cheapest_at([14, 0])
+    windows = frame.pipe(shift_windows, score(frame))
+    plan = plan_at([6, 6])
+    both_ways = windows.pipe(pick_near_plan, "price", plan, 2, 2, False)
+    earlier_only = windows.pipe(pick_near_plan, "price", plan, 2, 0, False)
+    assert both_ways["start"].to_list() == [8, 4]
+    assert earlier_only["start"].to_list() == [6, 4]
+
+
+def test_pick_near_plan_with_no_reach_keeps_the_plan():
+    frame = days_cheapest_at([14, 0, 9])
+    windows = frame.pipe(shift_windows, score(frame))
+    plan = plan_at([6, 3, 16])
+    for keep_rest in (False, True):
+        picks = windows.pipe(pick_near_plan, "price", plan, 0, 0, keep_rest)
+        assert picks["start"].to_list() == [6, 3, 16]
+
+
+def test_pick_near_plan_keeps_rest_when_the_plan_does():
+    # the plan 16, 11 keeps rest; moving day 1 later to 18 is out of range, but day 1
+    # at 16 and day 2 wanting 8 would break it, so day 2 stops at 11
+    frame = days_cheapest_at([16, 8])
+    windows = frame.pipe(shift_windows, score(frame))
+    picks = windows.pipe(pick_near_plan, "price", plan_at([16, 11]), 3, 3, True)
+    assert picks["start"].to_list() == [16, 11]
+    assert count_rest_breaks(picks) == 0
+    free = windows.pipe(pick_near_plan, "price", plan_at([16, 11]), 3, 3, False)
+    assert free["start"].to_list() == [16, 8]
+
+
+def test_flex_check_runs_from_the_plan_to_the_final_choice():
+    # the plan score is flat, so the plan is the first window, 00:00; the final score
+    # is the price itself, so an unlimited reach finds hindsight
+    frame = days_cheapest_at([6, 8, 10, 9])
+    table = frame.pipe(
+        flex_check,
+        pl.col("hour") * 0.0,
+        pl.col("price_da") + premium(),
+        {"none": (0, 0), "unlimited": (16, 16), "later-2": (0, 2)},
+    )
+    free = table.filter(~pl.col("keep_rest"))
+    unlimited = free.filter(pl.col("reach") == "unlimited").row(0, named=True)
+    none = free.filter(pl.col("reach") == "none").row(0, named=True)
+    later_2 = free.filter(pl.col("reach") == "later-2").row(0, named=True)
+    assert unlimited["saving_share"] == 1.0
+    assert none["moved_share"] == 0.0
+    assert later_2["mean_move_hours"] == 2.0
+    assert none["saving_share"] < later_2["saving_share"] < 1.0
+    assert table.height == 6

@@ -24,6 +24,7 @@
 # - 3\. The model
 # - 4\. Scores
 # - 5\. Rest between shifts
+# - 6\. Plan the week, adjust the day before
 # - What a week's notice costs
 #
 # ## Objective
@@ -56,9 +57,23 @@
 # %%
 import numpy as np
 import polars as pl
+from plotnine import (
+    aes,
+    facet_wrap,
+    geom_hline,
+    geom_line,
+    geom_point,
+    geom_text,
+    ggplot,
+    labs,
+    scale_x_continuous,
+    theme,
+    theme_minimal,
+    theme_set,
+)
 
 from lib.data_schemas import CombinedDataSchema
-from lib.decision import premium, rest_check
+from lib.decision import flex_check, premium, rest_check
 from lib.evaluation import Scores, cross_validate, evaluate, summarise_folds
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
 from lib.modeling import LassoThenXGB, df_to_np
@@ -72,6 +87,7 @@ _ = (
     .set_fmt_str_lengths(60)
     .set_float_precision(3)
 )
+theme_set(theme_minimal() + theme(figure_size=(10, 4.5), legend_position="top"))
 
 # %% [markdown]
 # ## 2. Data and features
@@ -497,13 +513,149 @@ rest_2025.join(rest_validation, on="schedule").select(
 #
 
 # %% [markdown]
+# ## 6. Plan the week, adjust the day before
+#
+# Crews need their shifts planned well ahead, and the day-ahead forecast picks the better shift. This section combines the two. Each day's shift is planned on the Sunday before, as in section 4, and at 11:55 the day before, the day-ahead model may move that day's start a few hours from the plan. The crew then knows its shift a week ahead, and it moves by a few hours at most. The plan rests on the weaker week-ahead forecast, which has no weather input because no week-ahead TSO forecast exists (section 1), but it is still a forecast of the coming week's prices, not a fixed timetable.
+#
+# - Planned start: the week-ahead model's cheapest forecast shift, the schedule of section 4.
+# - Final start: the day-ahead model's cheapest forecast shift among the starts from `earlier` hours before to `later` hours after the planned one, still between 00:00 and 16:00. `pick_near_plan` in `lib/decision.py` makes this choice and `flex_check` scores it.
+# - Reach: either way, `either-way-1h` to `either-way-4h`, where the start may move up to W hours earlier or later; or earlier only, `earlier-only-1h` to `earlier-only-4h`, where the plan is the latest a shift can start. `either-way-0h` keeps the plan, so it is the week-ahead schedule. `any-start` allows 16 hours, which covers every start, so it is the day-ahead choice of the main notebook.
+# - With the rest rule kept, the plan is the week-ahead schedule with rest kept from section 5, and the final start must also come at least 11 hours after the previous day's final shift ends. A start that works always exists: the plan keeps the rule, so the planned start plus the later reach is never too early.
+# - `saving_share`: `(standard - shift_cost) / (standard - hindsight)` from the year's total costs. With the rule kept, hindsight is the cheapest rest-keeping sequence, as in section 5. `saving_eur_per_year`: the saving against the standard 06:00 shift over a year.
+# - `moved_share`: the share of 2025's days whose final start differs from the planned one. `mean_move_hours`: the mean distance moved, in hours, over all days.
+#
+# The validation columns are the mean of 2023 and 2024, each year scored on its own.
+#
+
+# %% [markdown]
+# Score every reach on 2025 and on each validation year, with the free choice and with the rest rule kept.
+#
+
+# %%
+REACH_HOURS = [0, 1, 2, 3, 4]
+# name: (hours the start may move earlier, hours it may move later)
+REACHES: dict[str, tuple[int, int]] = {
+    f"either-way-{hours}h": (hours, hours) for hours in REACH_HOURS
+} | {f"earlier-only-{hours}h": (hours, 0) for hours in REACH_HOURS if hours > 0}
+# every start from 00:00 to 16:00 is within 16 hours, so this is the day-ahead choice
+REACHES["any-start"] = (16, 16)
+plan_score = REST_SCORES["week-ahead"]
+final_score = REST_SCORES["day-ahead"]
+
+flex_2025 = test_rest_frame.pipe(flex_check, plan_score, final_score, REACHES)
+# each validation year on its own, then the mean of the two, as in section 4
+flex_validation = (
+    pl.concat(
+        [
+            validation_rest_frame.filter(pl.col("year") == year).pipe(
+                flex_check, plan_score, final_score, REACHES
+            )
+            for year in FOLDS.values()
+        ]
+    )
+    .group_by("reach", "keep_rest", maintain_order=True)
+    .agg(
+        saving_share_validation=pl.col("saving_share").mean(),
+        saving_eur_per_year_validation=pl.col("saving_eur_per_year").mean(),
+    )
+)
+flex = flex_2025.join(flex_validation, on=["reach", "keep_rest"]).select(
+    "reach",
+    "keep_rest",
+    "saving_share_validation",
+    "saving_share",
+    "saving_eur_per_year_validation",
+    "saving_eur_per_year",
+    "moved_share",
+    "mean_move_hours",
+)
+flex
+
+# %% [markdown]
+# Choosing freely, a reach of one hour either way lifts the 2025 saving share from 90.7% to 93.1%, or 4.16 million EUR a year: about 105,000 of the 233,000 EUR a year that a week's notice costs. Wider reaches add little, 93.8% at four hours, and the start moves on about 35% of days, by 0.35 to 0.54 hours on average. On the validation years the gain is smaller, from 86.1% to 87.9% at one hour and 88.9% at four, about 74,000 and 118,000 of a 438,000 gap. Moving earlier only wins back roughly half as much as moving either way.
+#
+# With the rest rule kept, every either-way reach of one hour or more saves more than choosing each day the day before: 4.04 million EUR a year at one hour and 4.08 million at four, against 4.01 million on 2025, and 3.56 and 3.61 million against 3.29 million on the validation years. The likely reason is the one in section 8.4 of the main notebook. Choosing one day at a time under the rule, a late shift today can rule out a cheap early shift tomorrow; a plan that already keeps the rule holds each day's choice near a sequence that works.
+#
+
+# %% [markdown]
+# Plot the 2025 saving share against the reach, one panel for each setting, with the pure week-ahead and day-ahead levels as reference lines.
+#
+
+# %%
+SETTING_NAMES = {False: "free choice", True: "11 hours of rest kept"}
+# an ordered type, so the free choice is the first panel
+SETTING_ORDER = pl.Enum(list(SETTING_NAMES.values()))
+within_four = (pl.col("earlier") <= 4) & (pl.col("later") <= 4)
+# the 0-hour reach starts both lines
+either_way = flex_2025.filter(
+    within_four, pl.col("earlier") == pl.col("later")
+).with_columns(move=pl.lit("either way"), hours=pl.col("earlier"))
+earlier_only = flex_2025.filter(within_four, pl.col("later") == 0).with_columns(
+    move=pl.lit("earlier only"), hours=pl.col("earlier")
+)
+lines = pl.concat([either_way, earlier_only]).with_columns(
+    setting=pl.col("keep_rest").replace_strict(
+        SETTING_NAMES, return_dtype=SETTING_ORDER
+    )
+)
+line_names = lines.filter(pl.col("hours") == 4)
+references = pl.concat(
+    [
+        flex_2025.filter(pl.col("reach") == "any-start").with_columns(
+            level=pl.lit("day-ahead choice")
+        ),
+        flex_2025.filter(pl.col("reach") == "either-way-0h").with_columns(
+            level=pl.lit("week-ahead plan")
+        ),
+    ]
+).with_columns(
+    setting=pl.col("keep_rest").replace_strict(
+        SETTING_NAMES, return_dtype=SETTING_ORDER
+    )
+)
+
+(
+    ggplot(lines, aes("hours", "saving_share"))
+    + geom_hline(
+        data=references,
+        mapping=aes(yintercept="saving_share"),
+        linetype="dashed",
+        color="grey",
+    )
+    + geom_text(
+        data=references,
+        mapping=aes(x=2.5, y="saving_share", label="level"),
+        va="bottom",
+        size=8,
+        color="grey",
+    )
+    + geom_line(aes(color="move"))
+    + geom_point(aes(color="move"))
+    + geom_text(
+        data=line_names,
+        mapping=aes(x=4.1, label="move", color="move"),
+        ha="left",
+        size=8,
+    )
+    + facet_wrap("setting")
+    + scale_x_continuous(breaks=REACH_HOURS, limits=(0, 5.2))
+    + labs(
+        x="hours the day-ahead choice may move the planned start",
+        y="share of the possible saving, 2025",
+        title="A one-hour move wins back half of what a week's notice costs, and all of it with rest kept",
+    )
+    + theme(legend_position="none")
+)
+
+# %% [markdown]
 # ## What a week's notice costs
 #
-# Fixing all seven shifts on the Sunday before keeps most of the saving.
+# Fixing all seven shifts on the Sunday before keeps most of the saving, and letting the day before move each start by an hour wins back part of the rest.
 #
 # 1. On 2025 the week-ahead schedule gets 90.7% of the possible saving, 4.05 million EUR a year against the standard shift. Choosing each day the day before gets 4.29 million, so a week's notice costs about 230,000 EUR a year on 2025, and about 440,000 on the validation years.
 # 2. Last year's profile, a schedule that needs no forecast at all, saves 3.05 million on 2025. The week-ahead model closes 81% of the gap between that floor and the day-ahead model on 2025, and 74% on the validation years.
 # 3. What it gives up is the weather. No wind or solar forecast in this data reaches a week ahead, and a week-ahead weather forecast is the input most likely to win back part of the 230,000.
 # 4. The model was not retuned for the longer horizon, so these figures are a cautious estimate of what a week-ahead schedule can do.
 # 5. With the legal 11 hours of rest between shifts kept, a week's notice costs about 83,000 EUR a year instead of 230,000 (section 5). The day-ahead schedule breaks that rule on 7.4% of 2025's days and the week-ahead one on 3.3%, and keeping it costs the day-ahead schedule more.
+# 6. Planning the week on Sunday and letting the day-ahead forecast move each start by up to an hour either way keeps the notice and wins back about 105,000 of the 233,000 EUR a year on 2025, though only 74,000 of 438,000 on the validation years (section 6). The start moves on about one day in three. With the rest rule kept, the same plan with a one-hour reach saves about 36,000 EUR a year more on 2025 than choosing each day the day before, so a week's notice costs nothing once the law is kept.
 #

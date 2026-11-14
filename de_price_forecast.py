@@ -53,6 +53,7 @@
 #     - 8.2 One day of the decision
 #     - 8.3 Fixing the week in advance
 #     - 8.4 Rest between shifts
+#     - 8.5 Plan the week, adjust the day before
 # - Conclusion
 #
 # ## Objective
@@ -2294,6 +2295,12 @@ rest_2025.join(rest_validation, on="schedule").select(
 # The final model breaks the rest rule on 27 days of 2025, 7.4% of the year, and on 71 days of the validation years, 9.7%. The residual-load rule breaks it on 43 days and hindsight on 26: on about one day in 14, the cheapest shift starts more than 5 hours earlier than the day before's, whoever picks it.
 #
 # Keeping the rule lowers the model's saving by about 279,000 EUR a year, to 4.01 million, and its saving share to 91.7% of what a rest-keeping hindsight saves. Hindsight loses only 97,000, because it plans the whole year at once. Choosing one day at a time, the model cannot see that a late shift today rules out a cheap early shift tomorrow. The rule costs the residual-load rule more, 453,000 EUR a year, and with rest kept the model leads it by about 257,000 EUR a year instead of 83,000.
+#
+
+# %% [markdown]
+# ### 8.5 Plan the week, adjust the day before
+#
+# Section 6 of `week_ahead.ipynb` plans each shift on the Sunday before and lets this notebook's final model move the start by a few hours at 11:55 the day before. Allowing one hour either way, the start moves on about a third of 2025's days and the saving rises from 4.05 to 4.16 million EUR a year, about half of what a week's notice costs; with the rest rule kept, the same plan saves 4.04 million, about 36,000 more than choosing each day the day before under that rule.
 #
 
 # %% [markdown]
