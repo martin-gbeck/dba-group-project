@@ -116,6 +116,8 @@ Five groups tested: calendar (hour, weekday, month, weekend flag); fundamentals 
 | + level interaction | 96.2% | 19.1 |
 | + neighbour spreads | 95.6% | 17.5 |
 
+Why (Main [125]): residual load decides how far up the merit order demand reaches, so which plant sets the price (the shape); that plant's cost depends mostly on the gas price, which recent prices stand in for. Without price memory a model that expects crisis-level prices most likely sees a small dip in residual load as a saving worth paying the premium for (calendar 84.0% vs calendar + fundamentals 64.4%).
+
 Decisions: price memory kept (gap 31.4 points, SE 4.1); fundamentals kept (10.3, SE 2.4); calendar ties (0.5, SE 0.7) and stays only because this comparison ran after 2025 was scored; level interaction ties (0.4, SE 0.8), dropped as the simpler; neighbour spreads lose in both years (-0.6, SE 0.3), dropped though they cut MAE from 19.1 to 17.5. Main [124], [125].
 
 ### 7.3 Tuning (Main [128] to [165])
