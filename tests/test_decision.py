@@ -12,10 +12,12 @@ from lib.decision import (
     flex_check,
     pick_freely,
     pick_near_plan,
+    pick_weekly,
     pick_with_rest,
     premium,
     rest_check,
     shift_windows,
+    week_mean_premium,
 )
 
 MONDAY = date(2025, 1, 6)
@@ -228,3 +230,102 @@ def test_flex_check_runs_from_the_plan_to_the_final_choice():
     assert later_2["mean_move_hours"] == 2.0
     assert none["saving_share"] < later_2["saving_share"] < 1.0
     assert table.height == 6
+
+
+def calendar_days(starts: list[int], first_day: date = MONDAY) -> pl.DataFrame:
+    """`days_cheapest_at`, but on real consecutive dates from `first_day` with their own
+    weekdays, so weekends carry the premium."""
+    frame = days_cheapest_at(starts)
+    return frame.with_columns(
+        date=pl.col("date") + (first_day - MONDAY),
+    ).with_columns(weekday=pl.col("date").dt.weekday())
+
+
+def test_week_mean_premium_is_the_premium_averaged_over_a_week():
+    week = calendar_days([6] * 7)
+    by_hour = week.group_by("hour").agg(
+        averaged=premium().mean(), week_mean=week_mean_premium().first()
+    )
+    for row in by_hour.iter_rows(named=True):
+        assert row["week_mean"] == pytest.approx(row["averaged"])
+    assert week.filter(pl.col("hour") == 12).select(week_mean_premium()).row(0)[
+        0
+    ] == pytest.approx(10.0 * 2 / 7)
+
+
+def test_pick_weekly_holds_one_start_a_week_at_the_lowest_weekly_total():
+    # four days want 3, three want 10: summed over the week, 3 wins and holds all week
+    frame = calendar_days([3, 3, 10, 10, 10, 3, 3], first_day=MONDAY)
+    windows = frame.pipe(shift_windows, {"price": pl.col("price_da")})
+    picks = windows.pipe(pick_weekly, "price", False)
+    assert picks.height == 7
+    assert picks["start"].to_list() == [3] * 7
+    assert picks.columns == windows.columns
+
+
+def test_pick_weekly_starts_a_new_week_on_monday():
+    # Thursday to Sunday wants 9, the next Monday to Wednesday wants 2
+    frame = calendar_days([9, 9, 9, 9, 2, 2, 2], first_day=MONDAY + timedelta(days=3))
+    windows = frame.pipe(shift_windows, {"price": pl.col("price_da")})
+    picks = windows.pipe(pick_weekly, "price", False)
+    assert picks["start"].to_list() == [9, 9, 9, 9, 2, 2, 2]
+
+
+def test_pick_weekly_keeps_rest_at_the_week_boundary():
+    # week one wants 16, week two wants 0; free, Monday 00:00 follows Sunday 16:00
+    frame = calendar_days([16] * 7 + [0] * 7)
+    windows = frame.pipe(shift_windows, {"price": pl.col("price_da")})
+    free = windows.pipe(pick_weekly, "price", False)
+    kept = windows.pipe(pick_weekly, "price", True)
+    assert count_rest_breaks(free) == 1
+    assert count_rest_breaks(kept) == 0
+    assert kept["start"].to_list() == [16] * 7 + [11] * 7
+
+
+def test_rest_check_counts_start_changes_and_picks_weekly_scores_by_week():
+    frame = calendar_days([16] * 7 + [0] * 7)
+    scores = {
+        "daily": pl.col("price_da") + premium(),
+        "weekly": pl.col("price_da") + premium(),
+    }
+    table = frame.pipe(rest_check, scores, weekly=["weekly"])
+    weekly = table.filter(pl.col("schedule") == "weekly").row(0, named=True)
+    assert weekly["start_changes"] == 1
+    assert weekly["start_changes_rest"] == 1
+    assert weekly["rest_breaks"] == 1
+
+
+def test_flex_check_with_a_weekly_plan_and_no_reach_keeps_the_weekly_plan():
+    frame = calendar_days([3, 3, 10, 10, 10, 3, 3])
+    plan_score = pl.col("price_da")
+    table = frame.pipe(
+        flex_check,
+        plan_score,
+        pl.col("price_da") + premium(),
+        {"none": (0, 0), "unlimited": (16, 16)},
+        weekly_plan=True,
+    )
+    windows = frame.pipe(shift_windows, {"plan": plan_score})
+    # Series.sum() is typed as any number, Decimal included; cost is always a float
+    weekly_cost = float(windows.pipe(pick_weekly, "plan", False)["cost"].sum())
+    standard = float(windows.filter(pl.col("start") == 6)["cost"].sum())
+    hindsight = float(windows.pipe(pick_freely, "cost")["cost"].sum())
+    none = table.filter(~pl.col("keep_rest"), pl.col("reach") == "none").row(
+        0, named=True
+    )
+    unlimited = table.filter(~pl.col("keep_rest"), pl.col("reach") == "unlimited")
+    assert none["saving_share"] == pytest.approx(
+        (standard - weekly_cost) / (standard - hindsight)
+    )
+    assert unlimited["saving_share"].item() == 1.0
+
+
+def test_pick_weekly_is_not_fooled_by_a_start_missing_on_the_short_day():
+    # the Sunday of the March clock change has no 02:00, so no window starts there.
+    # Every day wants 09:00, and a weekly sum over 6 days would make 02:00 look cheaper
+    frame = calendar_days([9] * 7).filter(
+        ~((pl.col("date") == MONDAY + timedelta(days=6)) & (pl.col("hour") == 2))
+    )
+    windows = frame.pipe(shift_windows, {"price": pl.col("price_da") + 1000.0})
+    picks = windows.pipe(pick_weekly, "price", False)
+    assert picks["start"].to_list() == [9] * 7

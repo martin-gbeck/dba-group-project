@@ -4,6 +4,8 @@ Every function works on the hourly table built in notebook section 4.2, which ca
 `date`, `hour` and `weekday`.
 """
 
+from collections.abc import Collection
+
 import numpy as np
 import polars as pl
 
@@ -23,6 +25,16 @@ def premium() -> pl.Expr:
     return (
         pl.when(night_or_weekend).then(PREMIUM_EUR_PER_HOUR / SHIFT_MW).otherwise(0.0)
     )
+
+
+def week_mean_premium() -> pl.Expr:
+    """The staff premium of each clock hour averaged over the seven days of a week, in
+    EUR/MWh: the full premium from 22:00 to 06:00, and two sevenths of it by day, which
+    is the weekend's share. Added to a price profile that stands for a whole week, it
+    picks the start that is cheapest over that week."""
+    night = (pl.col("hour") >= 22) | (pl.col("hour") < 6)
+    full = PREMIUM_EUR_PER_HOUR / SHIFT_MW
+    return pl.when(night).then(full).otherwise(full * 2 / 7)
 
 
 def best_shift(score: pl.Expr) -> pl.Expr:
@@ -126,6 +138,35 @@ def pick_with_rest(windows: pl.DataFrame, score: str) -> pl.DataFrame:
     return pl.concat(picks)
 
 
+def pick_weekly(windows: pl.DataFrame, score: str, keep_rest: bool) -> pl.DataFrame:
+    """One start for each Monday-to-Sunday week: the start whose `score`, averaged over
+    the week's days, is lowest, the earliest on a tie. The mean rather than the sum, so a
+    start missing from a clock-change day is not favoured for having one window fewer.
+    With `keep_rest`, the weeks are picked in date order and a start more than 5 hours
+    earlier than the previous week's last start is not allowed, so the rest rule holds
+    at the week boundary as well as inside the week. On a 23-hour day with no window at
+    the week's start, the day takes the start with the next lowest weekly mean. One row
+    of `windows` per date."""
+    with_totals = windows.with_columns(
+        week=pl.col("date") - pl.duration(days=pl.col("date").dt.weekday() - 1)
+    ).with_columns(week_mean=pl.col(score).mean().over("week", "start"))
+    if not keep_rest:
+        picks = with_totals.pipe(pick_freely, "week_mean")
+        return picks.drop("week", "week_mean")
+    weeks: list[pl.DataFrame] = []
+    previous_start: int | None = None
+    for week in with_totals.partition_by("week", maintain_order=True):
+        allowed = (
+            week
+            if previous_start is None
+            else week.filter(pl.col("start") >= previous_start + EARLIEST_START_AFTER)
+        )
+        picks = allowed.pipe(pick_freely, "week_mean")
+        previous_start = picks["start"][-1]
+        weeks.append(picks)
+    return pl.concat(weeks).drop("week", "week_mean")
+
+
 def cheapest_with_rest(windows: pl.DataFrame) -> pl.DataFrame:
     """The sequence of shifts with the lowest total `cost` over the whole period in which
     every shift starts at least 11 hours after the one before ends: hindsight under the
@@ -186,12 +227,25 @@ def count_rest_breaks(picks: pl.DataFrame) -> int:
     return ordered.filter(follows_previous_day & too_early).height
 
 
-def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
+def count_start_changes(picks: pl.DataFrame) -> int:
+    """The number of days whose shift starts at a different hour from the previous
+    day's. `picks` holds one row per date with `date` and `start`, with no gap in the
+    dates."""
+    changed = picks.sort("date")["start"].diff() != 0
+    return int(changed.sum())
+
+
+def rest_check(
+    frame: pl.DataFrame, scores: dict[str, pl.Expr], weekly: Collection[str] = ()
+) -> pl.DataFrame:
     """For each named score and for hindsight, the rest breaks of its free schedule and
-    what the rest rule costs. One row per schedule:
+    what the rest rule costs. The scores named in `weekly` pick one start a week with
+    `pick_weekly`, the rest one start a day. One row per schedule:
 
     - `rest_breaks`, `rest_break_share`: days that start too soon after the day before,
       as a count and as a share of all days.
+    - `start_changes`, `start_changes_rest`: days whose start differs from the day
+      before's, picked freely and under the rest rule.
     - `saving_share`, `saving_share_rest`: `(standard - picked) / (standard - hindsight)`
       from the period's total costs, picked freely, then picked under the rest rule
       against hindsight under the rest rule.
@@ -203,8 +257,18 @@ def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
     forecast before passing it."""
     windows = frame.pipe(complete_shift_windows, scores)
     days = windows["date"].n_unique()
-    free_picks = {name: windows.pipe(pick_freely, name) for name in scores}
-    rest_picks = {name: windows.pipe(pick_with_rest, name) for name in scores}
+    free_picks = {
+        name: windows.pipe(pick_weekly, name, False)
+        if name in weekly
+        else windows.pipe(pick_freely, name)
+        for name in scores
+    }
+    rest_picks = {
+        name: windows.pipe(pick_weekly, name, True)
+        if name in weekly
+        else windows.pipe(pick_with_rest, name)
+        for name in scores
+    }
     free_picks["hindsight"] = windows.pipe(pick_freely, "cost")
     rest_picks["hindsight"] = windows.pipe(cheapest_with_rest)
     # each schedule's total cost over the period in EUR. Series.sum() is typed as any
@@ -218,6 +282,8 @@ def rest_check(frame: pl.DataFrame, scores: dict[str, pl.Expr]) -> pl.DataFrame:
             "days": days,
             "rest_breaks": count_rest_breaks(free_picks[name]),
             "rest_break_share": count_rest_breaks(free_picks[name]) / days,
+            "start_changes": count_start_changes(free_picks[name]),
+            "start_changes_rest": count_start_changes(rest_picks[name]),
             "saving_share": (standard - free_cost[name])
             / (standard - free_cost["hindsight"]),
             "saving_share_rest": (standard - rest_cost[name])
@@ -259,9 +325,11 @@ def flex_check(
     plan_score: pl.Expr,
     final_score: pl.Expr,
     reaches: dict[str, tuple[int, int]],
+    weekly_plan: bool = False,
 ) -> pl.DataFrame:
     """Plan each day's shift with `plan_score`, then move it with `final_score` to the
-    cheapest start within reach of the plan. `reaches` maps a name to how many hours
+    cheapest start within reach of the plan. With `weekly_plan`, the plan holds one
+    start a week, picked by `pick_weekly`. `reaches` maps a name to how many hours
     the start may move earlier and later. Each reach is scored twice, choosing freely
     and keeping the rest rule, where the plan also keeps it. One row per reach and
     setting:
@@ -286,11 +354,12 @@ def flex_check(
     }
     rows: list[dict[str, str | int | bool | float]] = []
     for keep_rest in (False, True):
-        plan = (
-            windows.pipe(pick_with_rest, "plan")
-            if keep_rest
-            else windows.pipe(pick_freely, "plan")
-        )
+        if weekly_plan:
+            plan = windows.pipe(pick_weekly, "plan", keep_rest)
+        elif keep_rest:
+            plan = windows.pipe(pick_with_rest, "plan")
+        else:
+            plan = windows.pipe(pick_freely, "plan")
         for name, (earlier, later) in reaches.items():
             picks = windows.pipe(
                 pick_near_plan, "final", plan, earlier, later, keep_rest

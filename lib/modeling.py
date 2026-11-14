@@ -1,5 +1,6 @@
-"""The forecasting method and what it needs: Lasso-then-XGBoost, the asinh wrapper, and
-the step that turns table columns into the matrix a model takes."""
+"""The forecasting method and what it needs: Lasso-then-XGBoost, the asinh wrapper, LEAR,
+the trailing hourly mean behind the no-model rules, and the step that turns table
+columns into the matrix a model takes."""
 
 from __future__ import annotations
 
@@ -21,6 +22,27 @@ class Regressor(Protocol):
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> object: ...
     def predict(self, X: np.ndarray) -> np.ndarray: ...
+
+
+def trailing_hourly_mean(
+    prices: pl.DataFrame, days: int, every: int = 1
+) -> pl.DataFrame:
+    """For each `date` and `hour`, the mean `price` at that hour over the `days` days
+    ending on `date`, stepping back `every` days at a time: `every=7` averages the same
+    weekday over `days` weeks. `prices` holds one row per German date and hour. A day
+    missing from `prices`, or an hour missing from a day such as 02:00 on the March
+    clock change, drops out of the mean, so the first dates of the data average fewer
+    days. Returns `date`, `hour` and `mean_price`."""
+    moved_forward = [
+        prices.with_columns(date=pl.col("date") + pl.duration(days=k * every))
+        for k in range(days)
+    ]
+    return (
+        pl.concat(moved_forward)
+        .group_by("date", "hour")
+        .agg(mean_price=pl.col("price").mean())
+        .sort("date", "hour")
+    )
 
 
 def df_to_np(frame: pl.DataFrame, columns: list[str]) -> np.ndarray:

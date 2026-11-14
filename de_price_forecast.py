@@ -112,7 +112,13 @@ from lib.evaluation import (
     summarise_folds,
 )
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
-from lib.modeling import AsinhTarget, LassoThenXGB, df_to_np, lear_forecast
+from lib.modeling import (
+    AsinhTarget,
+    LassoThenXGB,
+    df_to_np,
+    lear_forecast,
+    trailing_hourly_mean,
+)
 from lib.splitting import make_folds
 
 # legend on top: a legend on the right sits past the pane edge when the plot is wide
@@ -1154,7 +1160,7 @@ pl.DataFrame(
 # 2. A method's best setting: the one with the lowest MAE among the settings that tie with the top setting on saving share, meaning the setting with the highest mean saving share does not lead them.
 # 3. A wider search's best replaces a setting already chosen only if it wins under rule 1. Every score carries some luck from the two validation years, and the more settings a search tries, the more chances one of them has to score high by luck alone. So the best of 100 settings is more likely to lead only by luck than the best of 24, and it has to beat the current setting under rule 1 to replace it. Otherwise the current setting stays.
 #
-# The references: `same-hour-yesterday` and `training-mean`, the two standard naive forecasts; `standard-shift`, which scores 0 by definition; `last-year-profile`, the shift that was cheapest on last year's average hourly price; and `residual-load-rule`, which ignores the premium.
+# The references: `same-hour-yesterday` and `training-mean`, the two standard naive forecasts; `last-7-days-mean`, each hour's mean price over the 7 days up to D-1, the simplest rule that uses last week's prices; `standard-shift`, which scores 0 by definition; `last-year-profile`, the shift that was cheapest on last year's average hourly price; and `residual-load-rule`, which ignores the premium.
 #
 
 # %% [markdown]
@@ -1168,6 +1174,7 @@ pl.DataFrame(
 # - `compare(first, second, names)`, in `lib/evaluation.py`, applies rule 1 to two scored options up to the last step: it returns `saving_share_gap`, `mae_gap` and their SEs, and `winner`, the name of the option that leads, or `tie` when neither leads on either count. The simpler option on a tie is picked in the text. An option without MAE, such as the residual-load rule, ties on MAE.
 # - `best_setting(settings)`, in `lib/evaluation.py`, applies rule 2 to a table with one row per setting and returns the row it picks.
 # - `evaluate(frame, score, pick_with_premium, report_error)`, in `lib/evaluation.py`, picks each day's shift from `score` and computes the scores listed above. `pick_with_premium=False` is for a score that is not in EUR/MWh, such as residual load, which picks without adding the premium. `report_error=False` skips MAE, RMSE and MASE for a score that is not an hourly price forecast.
+# - `trailing_hourly_mean(prices, days)`, in `lib/modeling.py`, gives for each date and hour the mean price at that hour over the `days` days ending on that date, read by German date and hour. Moved one day forward, it is `last-7-days-mean`.
 # - `df_to_np(frame, columns)`, in `lib/modeling.py`, turns the named columns into the number matrix a model takes.
 # - `AsinhTarget(model)`, in `lib/modeling.py` and used in section 6, fits the model on asinh(price) and converts its predictions back with sinh.
 # - `daily_costs(frame)`, in `lib/decision.py` and used from section 7.2, gives each day's cost in EUR, electricity plus premium for 500 MWh, of four shifts: the standard 06:00 shift, the one with the lowest forecast price plus premium (`model`), the one with the lowest forecast residual load (`rule`) and the cheapest in hindsight.
@@ -1207,6 +1214,12 @@ xgb = set(columns_for(list(GROUPS)))
 #
 
 # %%
+# each hour's mean price over the 7 days up to D-1, all known at 11:55 on D-1
+local_prices = clean.group_by("date", "hour").agg(price=pl.col("price_da").mean())
+last_7_days = local_prices.pipe(trailing_hourly_mean, 7).with_columns(
+    date=pl.col("date") + pl.duration(days=1)
+)
+
 reference_scores: dict[str, list[Scores]] = {}
 for fit, valid in make_folds(dev, FOLDS).values():
     last_year = (
@@ -1217,9 +1230,13 @@ for fit, valid in make_folds(dev, FOLDS).values():
     profile = valid.join(last_year, on="hour", how="left").sort("utc_timestamp")[
         "profile"
     ]
+    recent = valid.join(last_7_days, on=["date", "hour"], how="left").sort(
+        "utc_timestamp"
+    )["mean_price"]
     standard = np.where(valid["hour"].is_between(6, 13).to_numpy(), 0.0, 1.0)
     fold_scores = {
         "same-hour-yesterday": evaluate(valid, valid["price_lag24"].to_numpy()),
+        "last-7-days-mean": evaluate(valid, recent.to_numpy()),
         "training-mean": evaluate(valid, np.full(valid.height, fit["price_da"].mean())),
         "standard-shift": evaluate(
             valid, standard, pick_with_premium=False, report_error=False
@@ -1274,7 +1291,7 @@ pl.concat([pl.DataFrame(comparison_rows), references], how="diagonal_relaxed").s
 ).sort("saving_share", descending=True)
 
 # %% [markdown]
-# The two tree methods beat every reference on the mean, and LEAR falls short of the residual-load rule, 93.5% of the possible saving against 94.1%.
+# The two tree methods beat every reference on the mean, and LEAR falls short of the residual-load rule, 93.5% of the possible saving against 94.1%. Last week's mean price at each hour gets 87.9%, well ahead of same hour yesterday (73.7%) but 6 to 8 points behind the methods that see tomorrow's forecasts.
 #
 
 # %% [markdown]
@@ -1940,7 +1957,11 @@ profile_2024 = (
     .group_by("hour")
     .agg(profile=pl.col("price_da").mean())
 )
-test_frame = test_frame.join(profile_2024, on="hour", how="left").sort("utc_timestamp")
+test_frame = (
+    test_frame.join(profile_2024, on="hour", how="left")
+    .join(last_7_days, on=["date", "hour"], how="left")
+    .sort("utc_timestamp")
+)
 standard_2025 = np.where(test_frame["hour"].is_between(6, 13).to_numpy(), 0.0, 1.0)
 
 pl.DataFrame(
@@ -1955,6 +1976,8 @@ pl.DataFrame(
         ),
         {"method": "same-hour-yesterday"}
         | evaluate(test_frame, test_frame["price_lag24"].to_numpy()),
+        {"method": "last-7-days-mean"}
+        | evaluate(test_frame, test_frame["mean_price"].to_numpy()),
         {"method": "last-year-profile"}
         | evaluate(test_frame, test_frame["profile"].to_numpy(), report_error=False),
         {"method": "standard-shift"}
@@ -1976,7 +1999,7 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# On 2025 the model gets 95.9% of the possible saving, against 94.1% for the residual-load rule and 83.2% for same hour yesterday. Against the standard 06:00 shift it saves 4.29 million EUR a year, 83,000 EUR more than the rule, and it picks the cheapest shift on 73.7% of days, with an MAE of 16.2 EUR/MWh.
+# On 2025 the model gets 95.9% of the possible saving, against 94.1% for the residual-load rule, 89.1% for last week's mean price at each hour and 83.2% for same hour yesterday. Reusing last week's prices would save 3.98 million EUR a year, about 305,000 less than the model. Against the standard 06:00 shift it saves 4.29 million EUR a year, 83,000 EUR more than the rule, and it picks the cheapest shift on 73.7% of days, with an MAE of 16.2 EUR/MWh.
 #
 # The test matches the folds: in CV the model led the rule by 2.7 percentage points (96.7% against 94.1%), ahead in both validation years, and here by 1.8 points, so the lead holds on a year neither the model nor the exploration saw.
 #
@@ -2241,6 +2264,8 @@ low, high = min(values) - 5, max(values) + 5
 #
 # A crew roster usually needs more than a day's notice. `week_ahead.ipynb` fixes all seven shifts on the Sunday before, with the final model and its settings unchanged but only the inputs known that early: the calendar and prices up to that Sunday, and no load, wind or solar forecasts. On 2025 it gets 90.7% of the possible saving, 4.05 million EUR a year against the standard shift. That is about 230,000 EUR a year less than choosing each day the day before, and a million more than last year's profile.
 #
+# Its section 7 sets the week with a rule instead: run the start that was cheapest on last week's mean price at each hour, plus the premium, from Monday to Sunday. The rule ties the week-ahead model on the validation years (88.1% against 86.1%), so the simpler rule sets the week. On 2025 it gets 89.0%, 3.98 million EUR a year, with one start a week.
+#
 
 # %% [markdown]
 # ### 8.4 Rest between shifts
@@ -2302,6 +2327,8 @@ rest_2025.join(rest_validation, on="schedule").select(
 #
 # Section 6 of `week_ahead.ipynb` plans each shift on the Sunday before and lets this notebook's final model move the start by a few hours at 11:55 the day before. Allowing one hour either way, the start moves on about a third of 2025's days and the saving rises from 4.05 to 4.16 million EUR a year, about half of what a week's notice costs; with the rest rule kept, the same plan saves 4.04 million, about 36,000 more than choosing each day the day before under that rule.
 #
+# Its section 7.4 makes the rule's week the plan instead. The one-hour move adds 2.0 to 2.7 points on the validation years, ahead in both, and with rest kept the rule's plan beats the model's in both years. On 2025, with rest kept, the rule's plan plus the move saves 4.13 million EUR a year, against 4.01 million for choosing each day the day before under the same rule. This is the combination the selection rule picks.
+#
 
 # %% [markdown]
 # ## Conclusion
@@ -2310,7 +2337,7 @@ rest_2025.join(rest_validation, on="schedule").select(
 #
 # Limitations, ranked by how much they could change the answer:
 #
-# 1. The TSO forecasts used as inputs are published at 18:00 on D-1, after the 11:55 gate. In practice a buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time. The residual-load rule is built from the same forecasts and would need the same purchase, so the timing does not favour either way of choosing the shift.
+# 1. The TSO wind and solar forecasts used as inputs are due by 18:00 on D-1, after the 11:55 gate; only the load forecast is out before it. In practice a buyer would use a vendor forecast made the same morning, so the results assume one of similar quality is bought; this exact source would not be available in time. The residual-load rule is built from the same forecasts and would need the same purchase, so the timing does not favour either way of choosing the shift.
 # 2. The lead over the residual-load rule is a narrow call. Within 2025 and within the 2026 reserve it is unlikely to be luck, but its 95% interval on 2025 runs from about 0 to 200,000 EUR a year (section 7.2), and the comparison between years rests on two validation years, so how large the lead is from year to year is uncertain.
 # 3. Spikes are missed: hours above 200 EUR/MWh by about 91 EUR/MWh in CV, and the evening peak is predicted a few EUR/MWh too low.
 # 4. The decision is simplified: a shift stays within one day, the night and weekend premiums do not stack, and the plant is treated as a price taker, assuming its 62.5 MW does not move the market price.

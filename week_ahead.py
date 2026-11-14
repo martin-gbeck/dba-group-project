@@ -25,6 +25,11 @@
 # - 4\. Scores
 # - 5\. Rest between shifts
 # - 6\. Plan the week, adjust the day before
+# - 7\. A decision rule instead of a model
+#     - 7.1 The rule and its variants
+#     - 7.2 The rule against the week-ahead model
+#     - 7.3 Rest and start changes
+#     - 7.4 The rule's plan, adjusted the day before
 # - What a week's notice costs
 #
 # ## Objective
@@ -73,10 +78,18 @@ from plotnine import (
 )
 
 from lib.data_schemas import CombinedDataSchema
-from lib.decision import flex_check, premium, rest_check
-from lib.evaluation import Scores, cross_validate, evaluate, summarise_folds
+from lib.decision import flex_check, premium, rest_check, week_mean_premium
+from lib.evaluation import (
+    CVScores,
+    Scores,
+    compare,
+    cross_validate,
+    evaluate,
+    paired_gap,
+    summarise_folds,
+)
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
-from lib.modeling import LassoThenXGB, df_to_np
+from lib.modeling import LassoThenXGB, df_to_np, trailing_hourly_mean
 from lib.splitting import make_folds
 
 # a kernel has no terminal, so polars would squeeze every table into ~100 characters
@@ -370,7 +383,7 @@ models = {
 #
 
 # %%
-validation: dict[str, Scores] = {}
+validation: dict[str, CVScores] = {}
 test_scores: dict[str, Scores] = {}
 validation_forecasts: dict[str, pl.DataFrame] = {}  # out-of-fold, 2023 and 2024
 test_forecasts: dict[str, np.ndarray] = {}
@@ -648,14 +661,401 @@ references = pl.concat(
 )
 
 # %% [markdown]
+# ## 7. A decision rule instead of a model
+#
+# The week-ahead model sees the clock and last week's prices, nothing about the weather. A rule that only reads last week's prices sees almost the same, and needs no model. This section asks whether the model beats it.
+#
+# The rule, `last-week`: on the decision Sunday, take each clock hour's mean settled price over the 7 days up to and including that Sunday, add the premium averaged over a week (`week_mean_premium`: the full 10 EUR/MWh from 22:00 to 06:00, two sevenths of it by day, the weekend's share), and run the cheapest 8-hour start from Monday to Sunday. Every day of the week gets the same score, so the week has one start.
+#
+# Two new tools, besides the main notebook's `compare` and `paired_gap` from `lib/evaluation.py`:
+#
+# - `trailing_hourly_mean(prices, days, every)`, in `lib/modeling.py`: for each date and hour, the mean price at that hour over the `days` days ending on that date, `every` days apart. `every=7` averages the same weekday over several weeks. An hour missing from a day, such as 02:00 on the March clock change, drops out of the mean.
+# - `pick_weekly(windows, score, keep_rest)`, in `lib/decision.py`: one start for each Monday-to-Sunday week, the one whose score averaged over the week's days is lowest. With `keep_rest`, the new week's start may be at most 5 hours earlier than the last week's. `rest_check` and `flex_check` use it for schedules passed as weekly.
+#
+# Nine ways to read last week's prices were scored on the validation years, and all nine are in the table. They differ in how far back they look and whether weekends get their own profile:
+#
+# | Rule | Price profile for each hour | Starts |
+# |---|---|---|
+# | `last-week` | mean of the 7 days to the decision Sunday | one a week |
+# | `last-4-weeks` | mean of the 28 days to the decision Sunday | one a week |
+# | `last-week-by-day` | as `last-week`, but each day adds its own premium, so a weekend can start at another hour | one a day |
+# | `same-day-last-week` | the same day 7 days earlier | one a day |
+# | `same-weekday-4-weeks` | the same weekday in each of the last 4 weeks | one a day |
+# | `day-type-7-days` | weekdays: the last 5 weekdays; weekends: last Saturday and Sunday | one a day |
+# | `day-type-28-days` | the same over 28 days | one a day |
+# | `last-week-plus-day-type-offset` | `last-week` plus how much the day's type (weekday or weekend) differed from the 28-day mean at that hour | one a day |
+# | `last-week-plus-weekday-offset` | `last-week` plus how much the same weekday over 4 weeks differed from the 28-day mean at that hour | one a day |
+#
+# The rule goes forward unless a variant beats it under rule 1 of the main notebook: a lead in saving share larger than one standard error of the paired yearly gaps, the SD of the 2023 and 2024 gaps over √2. Rules have no MAE, so a tie on saving share goes to the simpler rule, and `last-week` is the simplest: one profile and one start a week. Only `last-week` is scored on 2025, as a no-model reference beside the week-ahead model; no variant is.
+#
+
+# %% [markdown]
+# ### 7.1 The rule and its variants
+#
+# Build every rule's price profile from the settled prices, each read by German date and hour.
+#
+
+# %%
+weekdays_only = local_prices.filter(pl.col("date").dt.weekday() <= 5)
+weekends_only = local_prices.filter(pl.col("date").dt.weekday() >= 6)
+
+
+def profile_on(source: pl.DataFrame, name: str, on: str) -> pl.DataFrame:
+    """A trailing mean as a lookup table: its `date` renamed to `on`, its mean to `name`."""
+    return source.rename({"date": on, "mean_price": name})
+
+
+profiles = {
+    "mean_7d": local_prices.pipe(trailing_hourly_mean, 7),
+    "mean_28d": local_prices.pipe(trailing_hourly_mean, 28),
+    "weekday_7d": weekdays_only.pipe(trailing_hourly_mean, 7),
+    "weekend_7d": weekends_only.pipe(trailing_hourly_mean, 7),
+    "weekday_28d": weekdays_only.pipe(trailing_hourly_mean, 28),
+    "weekend_28d": weekends_only.pipe(trailing_hourly_mean, 28),
+}
+rule_frame = features.select(
+    "utc_timestamp", "date", "hour", "decision_date", "is_weekend", "price_lag7d"
+).with_columns(week_before=pl.col("date") - pl.duration(days=7))
+for name, profile in profiles.items():
+    rule_frame = rule_frame.join(
+        profile.pipe(profile_on, name, "decision_date"),
+        on=["decision_date", "hour"],
+        how="left",
+    )
+# the same weekday over the 4 weeks before the delivery day: the 4 weeks end on the
+# day 7 days back, the last one known on the decision Sunday
+rule_frame = rule_frame.join(
+    local_prices.pipe(trailing_hourly_mean, 4, every=7).pipe(
+        profile_on, "same_weekday_4w", "week_before"
+    ),
+    on=["week_before", "hour"],
+    how="left",
+)
+day_type_7d = (
+    pl.when(pl.col("is_weekend"))
+    .then(pl.col("weekend_7d"))
+    .otherwise(pl.col("weekday_7d"))
+)
+day_type_28d = (
+    pl.when(pl.col("is_weekend"))
+    .then(pl.col("weekend_28d"))
+    .otherwise(pl.col("weekday_28d"))
+)
+# name: (the price profile, True when the week shares one start)
+RULES: dict[str, tuple[pl.Expr, bool]] = {
+    "last-week": (pl.col("mean_7d"), True),
+    "last-4-weeks": (pl.col("mean_28d"), True),
+    "last-week-by-day": (pl.col("mean_7d"), False),
+    "same-day-last-week": (pl.col("price_lag7d"), False),
+    "same-weekday-4-weeks": (pl.col("same_weekday_4w"), False),
+    "day-type-7-days": (day_type_7d, False),
+    "day-type-28-days": (day_type_28d, False),
+    "last-week-plus-day-type-offset": (
+        pl.col("mean_7d") + day_type_28d - pl.col("mean_28d"),
+        False,
+    ),
+    "last-week-plus-weekday-offset": (
+        pl.col("mean_7d") + pl.col("same_weekday_4w") - pl.col("mean_28d"),
+        False,
+    ),
+}
+rule_frame = rule_frame.select(
+    "utc_timestamp",
+    *[profile.alias(name) for name, (profile, _) in RULES.items()],
+)
+dev_rules = dev_week_ahead.join(rule_frame, on="utc_timestamp", how="left").sort(
+    "utc_timestamp"
+)
+test_rules = test_2025.join(rule_frame, on="utc_timestamp", how="left").sort(
+    "utc_timestamp"
+)
+pl.DataFrame(
+    [
+        {
+            "set": name,
+            "first_day": part["date"].min(),
+            "missing_rule_values": part.select(list(RULES))
+            .null_count()
+            .sum_horizontal()
+            .item(),
+        }
+        for name, part in [
+            (
+                "validation-years",
+                dev_rules.filter(pl.col("year").is_in(FOLDS.values())),
+            ),
+            ("test-2025", test_rules),
+        ]
+    ]
+)
+
+# %% [markdown]
+# No rule has a missing value on the validation years or on 2025.
+#
+
+# %% [markdown]
+# Score every rule on each validation year. A one-start rule picks on its profile plus the week-averaged premium; the others add each day's own premium, as `evaluate` does for a price forecast.
+#
+
+
+# %%
+def score_rule(frame: pl.DataFrame, name: str) -> Scores:
+    one_start_a_week = RULES[name][1]
+    profile = frame[name].to_numpy()
+    if one_start_a_week:
+        week_premium = frame.select(week_mean_premium())[:, 0].to_numpy()
+        return evaluate(
+            frame, profile + week_premium, pick_with_premium=False, report_error=False
+        )
+    return evaluate(frame, profile, report_error=False)
+
+
+rule_validation = {
+    name: summarise_folds(
+        [
+            dev_rules.filter(pl.col("year") == year).pipe(score_rule, name)
+            for year in FOLDS.values()
+        ]
+    )
+    for name in RULES
+}
+rule_table = pl.DataFrame(
+    [
+        {
+            "rule": name,
+            "one_start_a_week": RULES[name][1],
+            "saving_share_2023": scores["saving_share_folds"][0],
+            "saving_share_2024": scores["saving_share_folds"][1],
+            "saving_share_validation": scores["saving_share"],
+            "saving_eur_per_year_validation": scores["saving_eur_per_year"],
+        }
+        | dict(
+            zip(
+                ("gap_to_last_week", "gap_se"),
+                paired_gap(
+                    scores["saving_share_folds"],
+                    rule_validation["last-week"]["saving_share_folds"],
+                ),
+                strict=True,
+            )
+        )
+        for name, scores in rule_validation.items()
+    ]
+)
+rule_table
+
+# %% [markdown]
+# No variant beats `last-week`, which gets 87.8% in 2023 and 88.3% in 2024. `last-week-by-day` ties it exactly on the mean, and the two offset variants and `day-type-28-days` fall short by 0.5 to 1.9 points, inside their SEs. Looking back 4 weeks loses 2.0 points in both years, and the same day last week loses 11. One week of prices carries the season and the level best; a single day is too noisy. Among the ties `last-week` is the simplest, with one profile and one start a week, so it goes forward.
+#
+
+# %% [markdown]
+# ### 7.2 The rule against the week-ahead model
+#
+# The same rule 1 between the rule and the week-ahead model of section 4, from their saving shares in 2023 and 2024. A positive `saving_share_gap` favours the rule.
+#
+
+# %%
+pl.DataFrame(
+    [
+        compare(
+            rule_validation["last-week"],
+            validation["week-ahead"],
+            ("last-week", "week-ahead"),
+        )
+    ]
+)
+
+# %% [markdown]
+# The rule gets 2.0 points more of the possible saving than the week-ahead model on the mean: 5.0 points more in 2023 and 1.1 less in 2024. The SE of 3.1 covers that gap, so the two tie, and with no MAE for the rule the simpler option wins. A week ahead, the shifts are set by the rule, not by the model.
+#
+
+# %% [markdown]
+# Score the rule on 2025 beside the two models and the references of section 4.
+#
+
+# %%
+test_scores["last-week"] = test_rules.pipe(score_rule, "last-week")
+validation["last-week"] = rule_validation["last-week"]
+pl.DataFrame(
+    [
+        {
+            "method": name,
+            "saving_share_2023": validation[name]["saving_share_folds"][0],
+            "saving_share_2024": validation[name]["saving_share_folds"][1],
+            "saving_share_validation": validation[name]["saving_share"],
+            "saving_share_2025": test_scores[name]["saving_share"],
+            "saving_eur_per_year_2025": test_scores[name]["saving_eur_per_year"],
+        }
+        for name in ("day-ahead", "week-ahead", "last-week", "last-year-profile")
+    ]
+)
+
+# %% [markdown]
+# On 2025 the rule gets 89.0% of the possible saving, 3.98 million EUR a year, and the week-ahead model 90.7%, 4.05 million. The model's 1.7-point lead there is smaller than the rule's 5.0-point lead in 2023, and one year cannot overturn a call made on the validation years. Both stay far below the day-ahead model's 95.9%.
+#
+
+# %% [markdown]
+# ### 7.3 Rest and start changes
+#
+# The rule's week has one start, so it can only break the rest rule on a Monday, when the new week's start is more than 5 hours earlier than the last. With rest kept, `pick_weekly` rules that out by choosing the cheapest start that is at most 5 hours earlier than the week before's. The table repeats section 5's columns for each year on its own, with two more:
+#
+# - `start_changes`, `start_changes_rest`: days whose start differs from the day before's, picked freely and with rest kept.
+#
+
+# %%
+RULE_SCORES = REST_SCORES | {"last-week": pl.col("last-week") + week_mean_premium()}
+rest_frames = {
+    str(year): validation_rest_frame.filter(pl.col("year") == year).join(
+        rule_frame.select("utc_timestamp", "last-week"), on="utc_timestamp"
+    )
+    for year in FOLDS.values()
+} | {
+    "2025": test_rest_frame.join(
+        rule_frame.select("utc_timestamp", "last-week"), on="utc_timestamp"
+    )
+}
+rest_by_year = pl.concat(
+    [
+        frame.sort("utc_timestamp")
+        .pipe(rest_check, RULE_SCORES, weekly=["last-week"])
+        .with_columns(year=pl.lit(year))
+        for year, frame in rest_frames.items()
+    ]
+)
+rest_by_year.filter(pl.col("schedule") != "residual-load-rule").select(
+    "schedule",
+    "year",
+    "start_changes",
+    "start_changes_rest",
+    "rest_breaks",
+    "saving_share",
+    "saving_share_rest",
+    "saving_eur_per_year",
+    "rest_eur_per_year",
+).sort("schedule", "year")
+
+# %% [markdown]
+# The rule changes its start on 10 to 20 days a year, against 101 to 127 for the week-ahead model and 155 to 169 for the day-ahead model. Choosing freely, it breaks the rest rule 2 or 3 times a year, always at a week boundary, and keeping the rule costs it at most 69,000 EUR a year (2023). With rest kept it gets 91.4% to 91.8% of what the best rest-keeping schedule saves, more than the week-ahead model (89.1% to 90.6%) in every year. On 2025 it then saves 4.00 million EUR a year, the same as the day-ahead model under the rule (4.01 million), and in 2023 and 2024 it saves more.
+#
+
+# %% [markdown]
+# ### 7.4 The rule's plan, adjusted the day before
+#
+# Section 6 again, with the rule's week as the plan in place of the week-ahead model's: at 11:55 the day before, the day-ahead model may move the start one hour earlier or later, `either-way-1h`; `either-way-0h` keeps the plan. With rest kept, the plan is `pick_weekly`'s rest-keeping week and the final start keeps 11 hours after the previous day's final shift, as in section 6. Both plans are scored the same way, each year on its own.
+#
+# Two calls, each under rule 1 on the validation years and fixed before the scores:
+#
+# 1. The one-hour move stays on top of the rule's plan only if `rule plan, either-way-1h` leads `rule plan, either-way-0h` by more than one standard error.
+# 2. Between the two plans with the same reach, the rule's plan stays unless the model's plan leads it by more than one standard error, since a rule is simpler than a model.
+#
+
+# %%
+NUDGE = {"either-way-0h": (0, 0), "either-way-1h": (1, 1)}
+PLANS = {
+    "rule": (RULE_SCORES["last-week"], True),
+    "model": (REST_SCORES["week-ahead"], False),
+}
+nudge_by_year = pl.concat(
+    [
+        frame.sort("utc_timestamp")
+        .pipe(
+            flex_check,
+            plan_score,
+            REST_SCORES["day-ahead"],
+            NUDGE,
+            weekly_plan=weekly_plan,
+        )
+        .with_columns(plan=pl.lit(plan_name), year=pl.lit(year))
+        for year, frame in rest_frames.items()
+        for plan_name, (plan_score, weekly_plan) in PLANS.items()
+    ]
+)
+nudge = (
+    nudge_by_year.pivot(
+        on="year",
+        index=["plan", "reach", "keep_rest"],
+        values="saving_share",
+        aggregate_function=None,
+    )
+    .rename({year: f"saving_share_{year}" for year in rest_frames})
+    .with_columns(
+        saving_share_validation=pl.mean_horizontal(
+            "saving_share_2023", "saving_share_2024"
+        )
+    )
+    .join(
+        nudge_by_year.filter(pl.col("year") == "2025").select(
+            "plan",
+            "reach",
+            "keep_rest",
+            saving_eur_per_year_2025="saving_eur_per_year",
+            moved_share_2025="moved_share",
+        ),
+        on=["plan", "reach", "keep_rest"],
+    )
+    .sort("keep_rest", "plan", "reach", descending=[False, True, False])
+)
+nudge
+
+# %% [markdown]
+# Apply the two calls, with rest kept and without. A positive gap favours `first`.
+#
+
+
+# %%
+def nudge_folds(plan: str, reach: str, keep_rest: bool) -> list[float]:
+    row = nudge.filter(
+        pl.col("plan") == plan,
+        pl.col("reach") == reach,
+        pl.col("keep_rest") == keep_rest,
+    ).row(0, named=True)
+    return [row["saving_share_2023"], row["saving_share_2024"]]
+
+
+nudge_calls: list[tuple[str, tuple[str, str], tuple[str, str]]] = [
+    ("move-on-rule-plan", ("rule", "either-way-1h"), ("rule", "either-way-0h")),
+    ("rule-plan-vs-model-plan", ("rule", "either-way-1h"), ("model", "either-way-1h")),
+    ("rule-plan-vs-model-plan", ("rule", "either-way-0h"), ("model", "either-way-0h")),
+]
+pl.DataFrame(
+    [
+        {
+            "call": call,
+            "keep_rest": keep_rest,
+            "first": " ".join(first),
+            "second": " ".join(second),
+        }
+        | dict(
+            zip(
+                ("saving_share_gap", "saving_share_gap_se"),
+                paired_gap(
+                    nudge_folds(*first, keep_rest), nudge_folds(*second, keep_rest)
+                ),
+                strict=True,
+            )
+        )
+        for call, first, second in nudge_calls
+        for keep_rest in (False, True)
+    ]
+)
+
+# %% [markdown]
+# The one-hour move stays on the rule's plan. It adds 2.0 points on the validation years with an SE of 0.9 when choosing freely, and 2.7 with an SE of 0.7 with rest kept, ahead in both years each time. On 2025 it lifts the rule from 3.98 to 4.10 million EUR a year, and from 4.00 to 4.13 million with rest kept, moving the start on about 35% to 38% of days.
+#
+# Between the two plans, the rule's never loses. Choosing freely, its 2.2-point lead with the move sits inside an SE of 2.4, a tie the simpler rule takes; with rest kept it leads by 2.2 points in both years. On 2025 the model's plan with the move saves more choosing freely (4.16 against 4.10 million) and less with rest kept (4.04 against 4.13 million).
+#
+# So the selection rule picks the decision rule's plan, with the day-ahead model allowed to move each start by up to an hour. With rest kept, as the law requires, that saves 4.13 million EUR a year on 2025, 94.4% of what the best rest-keeping schedule saves, against 4.01 million for choosing each day the day before under the same law.
+#
+
+# %% [markdown]
 # ## What a week's notice costs
 #
-# Fixing all seven shifts on the Sunday before keeps most of the saving, and letting the day before move each start by an hour wins back part of the rest.
+# Fixing the shifts a week ahead keeps most of the saving. A simple rule sets the week as well as a model does, and the day-ahead model adds most by moving each start a little the day before.
 #
-# 1. On 2025 the week-ahead schedule gets 90.7% of the possible saving, 4.05 million EUR a year against the standard shift. Choosing each day the day before gets 4.29 million, so a week's notice costs about 230,000 EUR a year on 2025, and about 440,000 on the validation years.
-# 2. Last year's profile, a schedule that needs no forecast at all, saves 3.05 million on 2025. The week-ahead model closes 81% of the gap between that floor and the day-ahead model on 2025, and 74% on the validation years.
-# 3. What it gives up is the weather. No wind or solar forecast in this data reaches a week ahead, and a week-ahead weather forecast is the input most likely to win back part of the 230,000.
-# 4. The model was not retuned for the longer horizon, so these figures are a cautious estimate of what a week-ahead schedule can do.
-# 5. With the legal 11 hours of rest between shifts kept, a week's notice costs about 83,000 EUR a year instead of 230,000 (section 5). The day-ahead schedule breaks that rule on 7.4% of 2025's days and the week-ahead one on 3.3%, and keeping it costs the day-ahead schedule more.
-# 6. Planning the week on Sunday and letting the day-ahead forecast move each start by up to an hour either way keeps the notice and wins back about 105,000 of the 233,000 EUR a year on 2025, though only 74,000 of 438,000 on the validation years (section 6). The start moves on about one day in three. With the rest rule kept, the same plan with a one-hour reach saves about 36,000 EUR a year more on 2025 than choosing each day the day before, so a week's notice costs nothing once the law is kept.
+# 1. Choosing the shift's timing at all is where most of the money is. On 2025, choosing each day the day before saves 4.29 million EUR a year against the standard 06:00 shift, and even last year's profile, with no forecast, saves 3.05 million.
+# 2. A week ahead there is no wind or solar forecast in the data, and the week-ahead model sees only the clock and last week's prices. A rule that reruns last week's cheapest start ties it on the validation years, 88.1% of the possible saving against 86.1% (section 7.2), so the simpler rule sets the week. On 2025 the rule gets 89.0%, 3.98 million EUR a year, and the model 90.7%.
+# 3. The rule holds one start for the whole week. It changes the start on 10 to 20 days a year instead of 100 or more, and it can only break the 11-hour rest rule at a week boundary, which costs at most 69,000 EUR a year to prevent. With rest kept it saves 4.00 million EUR a year on 2025, the same as choosing each day the day before under the same law.
+# 4. The day-ahead model adds most on top of the rule's week: letting it move each start by up to an hour the day before adds 2.0 to 2.7 points on the validation years, beyond the noise, and with rest kept the combination saves 4.13 million EUR a year on 2025 (section 7.4).
+# 5. What the week-ahead view gives up is the weather. A week-ahead wind and solar forecast is the input most likely to let a model beat the rule a week out, and the model should be tested again with one.
+# 6. Neither model was retuned for these uses; both keep the main notebook's final settings.
 #
