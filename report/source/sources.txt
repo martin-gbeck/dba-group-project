@@ -41,3 +41,8 @@ Does not support: the exact time results are published (sources differ, roughly 
 [10] Fraunhofer ISE, Energy-Charts API. https://api.energy-charts.info
 Claim it backs: the source of all data in the project (DE-LU day-ahead prices, neighbouring zone prices, TSO day-ahead forecasts of load, solar and wind), public, no registration, licensed CC BY 4.0 unless a response states otherwise.
 Does not support: any statement about forecast quality or publication times.
+
+[11] energy & meteo systems (n.d.). Market forecasts for wind and solar power in Europe. Product page. https://www.emsys-renewables.com/products/power_forecasts/market-forecasts-wind-solar.php
+Claim it backs: a commercial vendor sells wind and solar power forecasts for European markets, Germany included, with a horizon of up to ten days.
+Checked: page read 2026-11-14; it states "a time horizon of up to ten days" and offers Germany-specific feed-in forecasts. No date on the page.
+Does not support: the accuracy of those forecasts; their price; that any TSO publishes such a forecast; anything about whether they would let a model beat the last-week rule.

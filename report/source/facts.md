@@ -150,11 +150,13 @@ The presentation chose XGBoost alone (depth 3, learning rate 0.05, 200 trees) un
 | Final model | 95.9% | 4,287,000 | 59.84 | 73.7% | 16.2 | 24.1 | 0.625 |
 | Residual-load rule | 94.1% | 4,205,000 | 60.30 | 70.7% | | | |
 | Same hour yesterday | 83.2% | 3,717,000 | 62.97 | 49.9% | 26.0 | 40.4 | 1.000 |
+| Last week's mean price at each hour (day-ahead naive, `last-7-days-mean`) | 89.1% | 3,982,000 | 61.51 | 52.0% | 26.8 | 38.4 | 1.031 |
 | Last year's profile | 68.3% | 3,055,000 | 66.60 | 32.9% | | | |
 | Standard shift | 0% | 0 | 83.34 | 1.4% | | | |
 | Training mean | -33.6% | -1,503,000 | 91.57 | 6.6% | 35.8 | 52.6 | 1.377 |
 | Hindsight | 100% | 4,469,000 | | | | | |
 
+- Model over last week's mean price at each hour: 4,287,325 - 3,982,330 = 304,995 EUR a year, "about 305,000". Validation: `last-7-days-mean` 87.9% (88.8% 2023, 87.1% 2024), MAE 28.0. Main [114], [191] (added 2026-11-14, commit 83e0975).
 - Lead over the rule: 82,645 EUR a year, "83,000". 1.8 points (CV: 2.7). Main [192], [195].
 - Hindsight saving 4,469,477 EUR (4.47 million). Week [32] (rest table) and Main [208].
 - Choosing the shift at all, by the rule, is worth 4.2 million a year, about 50 times the model's extra 83,000. Main [197].
@@ -210,9 +212,41 @@ Validation EUR a year: free 0 h 3.50 million, 1 h 3.58, 4 h 3.62, day-ahead 3.94
 
 Readings: free, 1 h either way wins back 105,000 of the 233,000 EUR a year a week's notice costs on 2025 (45%); 4 h wins back 136,000 (59%). On validation 74,000 and 118,000 of 438,000 (17% and 27%). Earlier only wins back roughly half as much (49,000 at 1 h, 70,000 at 4 h on 2025). With rest kept, every either-way reach of 1 h or more beats choosing each day the day before: 4.04 million (1 h) and 4.08 million (4 h) vs 4.01 million on 2025 (+36,000 and +69,000); 3.56 and 3.61 vs 3.29 million on validation. Likely reason: day-by-day choice under the rule can take a late shift that rules out a cheap early one tomorrow; a plan that already keeps the rule keeps each day's choice near a workable sequence. Main 8.4 makes the same point for the greedy day-ahead schedule. Fig5.
 
+## 15. A decision rule for the week (`week_ahead.ipynb` section 7, commit 83e0975; `docs/week-rule.md`)
+
+Rule `last-week`: on the decision Sunday, each clock hour's mean settled price over the 7 days up to and including Sunday, plus the premium averaged over a week (10 EUR/MWh 22:00 to 06:00, 10 x 2/7 by day), cheapest 8-hour start, run Monday to Sunday. Week [40].
+
+| Fact | Value | Source |
+|---|---|---|
+| Rule, validation | 87.8% (2023), 88.3% (2024), mean 88.1% | Week [45], [51] |
+| Week-ahead model, validation | 82.8%, 89.4%, mean 86.1% | Week [51] |
+| Paired gap rule minus model | +2.0 points (+5.0 in 2023, -1.1 in 2024), SE 3.1: tie; rule has no MAE; simpler wins = rule | Week [48] |
+| Variants | 8 variants (4 weeks of history, same day last week, same weekday over 4 weeks, weekday/weekend profiles over 7 and 28 days, two offset versions, each day's own premium); none beats the rule on validation; only `last-week` scored on 2025 | Week [45] |
+| 2025 | rule 89.0%, 3,979,530 EUR a year ("3.98 million"); model 90.7%, 4.05 million; model's 2025 lead 1.7 points < rule's 2023 lead 5.0 | Week [51] |
+| Start changes a year (2023, 2024, 2025) | rule 10, 19, 20; week-ahead model 104, 127, 101; day-ahead model 159, 169, 155 | Week [54] |
+| Rest breaks, rule, free | 3, 2, 2 a year, only at a week boundary; 2025: 2 of 365 days (0.5%) | Week [54] |
+| Rest kept, rule | saving share against rest-keeping hindsight 91.4%, 91.8%, 91.5%; change in saving -69,000 (2023), -25,000 (2024), +22,000 (2025); 2025 saving 4,001,426 ("4.00 million") vs day-ahead under rest 4,008,643 ("4.01 million") | Week [54], [57] |
+
+## 16. The rule's plan, adjusted the day before (`week_ahead.ipynb` 7.4)
+
+Same as section 13 with the rule's week as the plan (`pick_weekly`; with rest kept, a new week's start at most 5 hours earlier than the last). Reaches 0 and 1 hour either way only. Two calls declared before the results: the move stays if rule+1h beats rule alone; the model's plan replaces the rule's only if it beats it. Week [56], [57], [59].
+
+| Plan, reach | Free 2023 / 2024 / 2025 | Free EUR 2025 | Rest kept 2023 / 2024 / 2025 | Rest kept EUR 2025 | Days moved 2025 |
+|---|---|---|---|---|---|
+| Rule, no move | 87.8 / 88.3 / 89.0% | 3,980,000 | 91.4 / 91.8 / 91.5% | 4,001,000 | 0% |
+| Rule, 1 h either way | 89.0 / 91.1 / 91.7% | 4,100,000 | 93.4 / 95.3 / 94.4% | 4,129,000 | 35.1% |
+| Model, no move | 82.8 / 89.4 / 90.7% | 4,055,000 | 89.1 / 90.6 / 89.8% | 3,926,000 | 0% |
+| Model, 1 h either way | 84.4 / 91.4 / 93.1% | 4,160,000 | 91.2 / 93.1 / 92.5% | 4,045,000 | 35.1% |
+
+In millions: rule + 1 h 4.10 (free) and 4.13 (rest kept); model + 1 h free 4.16. Paired gaps (validation): move on rule plan +2.0 points SE 0.9 (free), +2.7 SE 0.7 (rest kept): stays. Rule plan vs model plan, both 1 h: +2.2 SE 2.4 (free, tie, rule as simpler), +2.2 SE 0.0 (rest kept, rule ahead both years). Rule plan + 1 h, rest kept, 2025: 4,129,419 = +127,993 over rule alone ("128,000"), +84,806 over model plan + 1 h ("85,000"), +120,776 over day-ahead under rest ("121,000"). Week [57], [59].
+
+## 15b. Commercial week-ahead renewable forecasts
+
+energy & meteo systems sells wind and solar power forecasts for Europe, Germany included, "with a time horizon of up to ten days" (product page, no date; checked 2026-11-14). Source card [11].
+
 ## 14. Things the report must state
 
-1. TSO wind and solar forecasts are published after the gate (18:00 D-1); results assume a vendor forecast of similar quality bought the same morning. The residual-load rule uses the same forecasts.
+1. TSO wind and solar forecasts are due by 18:00 D-1, after the gate (not "published at 18:00"); results assume a vendor forecast of similar quality bought the same morning. The residual-load rule uses the same forecasts.
 2. The selection rule changed after the presentation and after 2025 was scored (section 7.4); the calendar decision too ran after 2025 was scored.
 3. Only the final model is scored on 2025 and 2026; LEAR and other candidates never are.
 4. Simplifications: shift within one day; premiums do not stack; weekend premium on every weekend hour (raises cost of weekend shifts, never changes which wins); price taker.

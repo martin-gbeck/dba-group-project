@@ -19,7 +19,7 @@ We answer three questions:
 
 Answering them needs hourly prices, the forecasts the market sees, and enough years to cover both calm and crisis markets. We use seven years of public German data, build the forecast on 2019 to 2024 and test it once on 2025.
 
-**In short:** our final model, a Lasso regression followed by XGBoost on calendar, load and renewable forecasts and recent prices, picks shifts that capture 95.9% of the possible saving in 2025. That is 4.29 million EUR a year against the standard shift, 83,000 EUR more than the residual-load rule, and the lead held in both validation years and in the first nine months of 2026. Fixing the whole week on Sunday costs about 233,000 EUR a year of that saving. Once the legal rest is kept, the best plan combines the two: fix each week's shifts on Sunday and let the 11:55 forecast move each start by up to one hour. That saves 4.04 million EUR a year, more than choosing each day freely under the same rest rule (4.01 million).
+**In short:** our final model, a Lasso regression followed by XGBoost on calendar, load and renewable forecasts and recent prices, picks shifts that capture 95.9% of the possible saving in 2025. That is 4.29 million EUR a year against the standard shift, 83,000 EUR more than the residual-load rule, and the lead held in both validation years and in the first nine months of 2026. A week ahead there is no public wind or solar forecast, and there a simple rule sets the week as well as a model: rerun the shift that was cheapest on last week's prices, the same start from Monday to Sunday. The forecasting model earns its keep the day before, when tomorrow's load, wind and solar forecasts are out. Once the legal rest is kept, the best plan combines the two: the rule fixes each week's shift on Sunday, and the 11:55 forecast may move each start by up to one hour. That saves 4.13 million EUR a year on 2025, more than choosing each day freely under the same rest rule (4.01 million).
 
 # 2. Data, assumptions and what is missing
 
@@ -145,13 +145,14 @@ Figure 2. Share of the possible saving against the standard 06:00 shift, 2025.
 |------------------------------------|----------------|------------------------|----------------------------|------|
 | Final model | 95.9% | 4,287,000 | 73.7% of days | 16.2 |
 | Residual-load rule | 94.1% | 4,205,000 | 70.7% | |
+| Last week's mean price at each hour | 89.1% | 3,982,000 | 52.0% | 26.8 |
 | Same hour yesterday | 83.2% | 3,717,000 | 49.9% | 26.0 |
 | Last year's profile | 68.3% | 3,055,000 | 32.9% | |
 | Cheapest shift in hindsight | 100% | 4,469,000 | 100% | |
 
 Table 3. The test year, 2025, for 500 MWh a day.
 
-The forecast beats the rule on the test year (Figure 2, Table 3). It gets 95.9% of the possible saving against 94.1%. Its shifts cost 59.84 EUR/MWh on average against 83.34 for the standard shift, a saving of 4.29 million EUR a year on electricity plus premium, and 83,000 EUR more than the rule. The lead is smaller than on the validation years (1.8 points against 2.7) but on the same side. Choosing the shift at all is still where most of the money is: the rule alone saves 4.20 million, about 50 times the model's extra 83,000.
+The forecast beats the rule on the test year (Figure 2, Table 3). It gets 95.9% of the possible saving against 94.1%. Its shifts cost 59.84 EUR/MWh on average against 83.34 for the standard shift, a saving of 4.29 million EUR a year on electricity plus premium, and 83,000 EUR more than the rule. The lead is smaller than on the validation years (1.8 points against 2.7) but on the same side. Choosing the shift at all is still where most of the money is: the rule alone saves 4.20 million, about 50 times the model's extra 83,000. The model also has to beat the simplest thing a planner could do the day before, which is to reuse last week's prices: each hour's mean price over the past 7 days picks shifts worth 89.1% of the possible saving, 3.98 million EUR a year. The model gets about 305,000 EUR a year more, because it sees tomorrow's load, wind and solar forecasts and last week's prices do not.
 
 To check whether the 83,000 EUR could be luck in which days 2025 happened to bring, we resampled the year 10,000 times from runs of 7 consecutive days drawn with replacement, which keeps the weekly cycle and spells of similar weather together (Künsch 1989). The 95% interval for the lead runs from 3,700 to 181,000 EUR a year, and the model does no better than the rule in only 2.0% of the resampled years. Runs of 1 day (2,700 to 170,000) and 30 days (550 to 198,000) give the same answer. So the lead is unlikely to be luck, but its size is uncertain.
 
@@ -179,7 +180,7 @@ Where the first version's logic was not sound, we changed it. Three gaps came ou
 
 1. **The selection rule.** The rule we presented mostly measured how different 2023 and 2024 were, not which model was better. The paired gap within each year replaced it (section 4.3), and the final model changed from XGBoost alone to Lasso-then-XGBoost.
 2. **Rest between shifts.** Choosing each day freely ignored the 11-hour rest rule and broke it on 7.4% of 2025's days. Section 7.2 keeps the rule and prices what it costs.
-3. **Notice for staff.** A shift chosen at 11:55 for the next day gives the crew one day's notice. Section 7.1 fixes the week on Sunday instead, and section 7.3 keeps a week's notice while letting the day-ahead forecast move the start by up to an hour.
+3. **Notice for staff.** A shift chosen at 11:55 for the next day gives the crew one day's notice. Section 7.1 fixes the week on Sunday instead, where a simple rule turns out to do as well as a model, and section 7.3 keeps a week's notice while letting the day-ahead forecast move the start by up to an hour.
 
 One assumption we could not fix with our data: the wind and solar forecasts we use are published after the auction closes, so the results assume the plant buys a commercial forecast of similar quality made the same morning (section 2).
 
@@ -197,6 +198,14 @@ A roster needs more than a day's notice, so we fixed all seven shifts of each we
 
 It still gets 90.7% of the possible saving on 2025, 4.05 million EUR a year. That is about 233,000 EUR a year less than choosing each day the day before, and a million more than last year's profile, which needs no forecast. On the validation years it gets 86.1% (3.50 million EUR), against 96.7% for the day-ahead model, a gap of 438,000 EUR a year. Measured from last year's profile up to the day-ahead model, it closes 81% of the gap on 2025 and 74% on the validation years. Its price forecast is worse than simply repeating yesterday's prices (MASE 1.03, MAE 26.6 EUR/MWh), yet it picks well, because the clock and last week's prices carry most of the shape of the day.
 
+Commercial vendors do sell wind and solar power forecasts for Germany up to ten days ahead (energy & meteo systems n.d.), but we have no access to one, so our week-ahead model has no weather input. Without it, the model sees little that last week's prices do not already show. So we tested a simple decision rule against it. On Sunday, take each hour's mean price over the past 7 days, add the staff premium averaged over the week (the full 10 EUR/MWh at night, two sevenths of it by day for the weekend), and run the cheapest 8-hour shift on that profile every day from Monday to Sunday.
+
+On the validation years the rule gets 88.1% of the possible saving and the week-ahead model 86.1%: 5.0 points more in 2023 and 1.1 points less in 2024. Under our paired-gap rule (section 4.3) that is a tie, with a standard error of 3.1 points, and on a tie the simpler option wins, so the rule sets the week. Eight variants of the rule, such as four weeks of history or separate weekday and weekend profiles, did no better on the validation years. On 2025 the rule gets 89.0% (3.98 million EUR a year) and the model 90.7% (4.05 million); one year cannot overturn a call made on two, and the rule's lead in 2023 was larger than the model's in 2025.
+
+The rule also gives one shift that holds for the whole week. It changes the start on 10 to 20 days a year, against 101 to 127 for the week-ahead model and 155 to 169 for choosing each day. A crew can plan around one start a week, and inside a week the rest rule of section 7.2 always holds, because the start does not move.
+
+The lesson for the plant goes beyond this case: not every part of a business problem needs a model. A week ahead, the inputs that make our model useful do not exist yet, and a clear rule does as well, is easier to explain to the people who work the shifts, and costs nothing to run.
+
 ## 7.2 Eleven hours of rest
 
 German law requires at least 11 hours of uninterrupted rest after the end of each working day (ArbZG §5). With 8-hour shifts on consecutive days, a shift may therefore start at most 5 hours earlier than the day before's. Choosing each day freely ignores this, so we counted how often each schedule breaks the rule and what keeping it costs. With the rule kept, each method takes its cheapest forecast shift among the starts that leave 11 hours of rest after yesterday's shift, which matches a choice made at 11:55 when yesterday's shift is already fixed. The new 100% is the best rest-keeping schedule over the whole year, found by dynamic programming.
@@ -205,12 +214,15 @@ German law requires at least 11 hours of uninterrupted rest after the end of eac
 |---------------------|---------------------|----------------------|---------------------|-------------------------|
 | Final model (day-ahead) | 27 (7.4%) | 95.9% | 91.7% | -279,000 |
 | Week-ahead schedule | 12 (3.3%) | 90.7% | 89.8% | -129,000 |
+| Last-week rule, one start a week | 2 (0.5%) | 89.0% | 91.5% | +22,000 |
 | Residual-load rule | 43 (11.8%) | 94.1% | 85.8% | -453,000 |
 | Cheapest in hindsight | 26 (7.1%) | 100% | 100% | -97,000 |
 
 Table 4. Rest between shifts, 2025.
 
 Even the cheapest schedule in hindsight breaks the rule on 26 days, about one day in 14, so the conflict comes from the prices, not from the forecast (Table 4). Keeping the rule costs the final model 279,000 EUR a year, leaving 4.01 million (91.7%). It costs the residual-load rule more, 453,000 (85.8%), so with rest kept the model's lead over the rule grows from 83,000 to about 257,000 EUR a year. Choosing one day at a time, a method cannot see that a late shift today rules out a cheap early shift tomorrow. Hindsight, which plans the whole year at once, loses only 97,000.
+
+The last-week rule can only break the rest rule on a Monday, when a new week's start is more than 5 hours earlier than the last. That happened twice in 2025. With the rule kept, the new week's start may be at most 5 hours earlier than the old one, which cost nothing in 2025 (the saving rose by 22,000 EUR a year) and at most 69,000 EUR a year in the validation years. With rest kept, the rule saves 4.00 million EUR a year on 2025, the same as the day-ahead model under the same law (4.01 million), with a week's notice instead of a day's.
 
 ## 7.3 Plan the week, adjust the day before
 
@@ -220,38 +232,45 @@ Dr Lim's suggestion combines the two. Each day's shift is fixed on the Sunday be
 
 Figure 5. Share of the possible saving against how far the 11:55 choice may move the Sunday plan, 2025, with the pure week-ahead plan and the pure day-ahead choice as dashed lines.
 
-| Reach | Saving share, free | EUR a year, free | Saving share, rest kept | EUR a year, rest kept | Days moved |
+| Plan and reach | Saving share, free | EUR a year, free | Saving share, rest kept | EUR a year, rest kept | Days moved |
 |---------------------------|-----------------|---------------|----------------------|--------------------|---------|
-| None (week-ahead plan) | 90.7% | 4,055,000 | 89.8% | 3,926,000 | 0% |
-| 1 hour either way | 93.1% | 4,160,000 | 92.5% | 4,045,000 | 35% |
-| 2 hours either way | 93.3% | 4,172,000 | 92.8% | 4,057,000 | 35% |
-| 4 hours either way | 93.8% | 4,191,000 | 93.3% | 4,078,000 | 36% |
-| 1 hour earlier only | 91.8% | 4,104,000 | 91.1% | 3,984,000 | 13% |
-| 4 hours earlier only | 92.3% | 4,125,000 | 91.8% | 4,012,000 | 13% |
+| Model's plan, no move | 90.7% | 4,055,000 | 89.8% | 3,926,000 | 0% |
+| Model's plan, 1 hour either way | 93.1% | 4,160,000 | 92.5% | 4,045,000 | 35% |
+| Model's plan, 2 hours either way | 93.3% | 4,172,000 | 92.8% | 4,057,000 | 35% |
+| Model's plan, 4 hours either way | 93.8% | 4,191,000 | 93.3% | 4,078,000 | 36% |
+| Model's plan, 1 hour earlier only | 91.8% | 4,104,000 | 91.1% | 3,984,000 | 13% |
+| Model's plan, 4 hours earlier only | 92.3% | 4,125,000 | 91.8% | 4,012,000 | 13% |
+| Last-week rule's plan, no move | 89.0% | 3,980,000 | 91.5% | 4,001,000 | 0% |
+| Last-week rule's plan, 1 hour either way | 91.7% | 4,100,000 | 94.4% | 4,129,000 | 35% |
 | Any start (day-ahead choice) | 95.9% | 4,287,000 | 91.7% | 4,009,000 | |
 
-Table 5. Plan on Sunday, adjust at 11:55 the day before, 2025. Days moved: share of days whose final start differs from the plan, free choice.
+Table 5. Plan on Sunday, adjust at 11:55 the day before, 2025. The model's plan comes from the week-ahead model, the rule's plan from the last-week rule of section 7.1. Days moved: share of days whose final start differs from the plan, free choice.
 
 Most of the gain comes from the first hour (Figure 5, Table 5). Choosing freely, letting the start move one hour either way lifts the saving share from 90.7% to 93.1%, or 4.16 million EUR a year. That wins back about 105,000 of the 233,000 EUR a year a week's notice costs, 45% of it. Four hours win back 136,000 (59%). The start moves on about a third of days, by 0.35 hours a day on average at a one-hour reach. Moving only earlier wins back roughly half as much (49,000 at one hour, 70,000 at four). On the validation years the gain is smaller: 74,000 of a 438,000 EUR gap at one hour and 118,000 at four.
 
 With the rest rule kept, the plan with an adjustment does better than choosing each day freely the day before. A one-hour reach saves 4.04 million EUR a year (92.5%) and a four-hour reach 4.08 million (93.3%), against 4.01 million (91.7%) for the daily choice under the same rule. The validation years agree: 3.56 and 3.61 million against 3.29 million. The likely reason is the one in section 7.2. Choosing one day at a time under the rule, a late shift today can rule out a cheap early shift tomorrow. The Sunday plan already keeps the rule, and keeping each day's adjustment within a small window around it keeps each day's choice close to a sequence that works. Under the law, a week's notice with one hour of room to move costs the plant nothing.
 
+Section 7.1 found that the last-week rule, not the model, should set the week, so we ran the same test with the rule's week as the plan (Table 5, last rows). Before seeing the results we fixed two calls, each under the paired-gap rule on the validation years: the one-hour move stays only if it beats the rule's plan alone, and the model's plan replaces the rule's only if it beats it. The move stays. It adds 2.0 points on the validation years when choosing freely (standard error 0.9) and 2.7 points with rest kept (0.7), ahead in both years each time. The rule's plan stays. Choosing freely, it ties the model's plan (2.2 points ahead, standard error 2.4), and with rest kept it is 2.2 points ahead in both years.
+
+So the plan we recommend is the rule's week with a one-hour move by the day-ahead model. With rest kept, it saves 4.13 million EUR a year on 2025, 94.4% of what the best rest-keeping schedule saves. That is 128,000 EUR a year more than the rule's plan alone, 85,000 more than the model's plan with the same move (4.04 million), and 121,000 more than choosing each day the day before under the same law (4.01 million). Choosing freely, the model's plan with the move does better on 2025 (4.16 million against 4.10 million), but freely chosen shifts break the rest rule and the two plans tie on the validation years.
+
 # 8. Recommendations
 
 1. **Choose the shift every day.** A fixed 06:00 shift is the cheapest on about 1% of days. Choosing the shift by forecast residual load alone saved 4.20 million EUR a year against it on 2025, so the daily choice itself is where most of the money is.
-2. **Plan each week on Sunday, and let the 11:55 forecast move each start by up to one hour either way.** This gives staff a week's notice and keeps the legal 11 hours of rest. On 2025 it saves 4.04 million EUR a year, more than the daily choice under the same rest rule (4.01 million) and 119,000 more than a fixed weekly plan that keeps the rule. A four-hour window adds about 33,000 more.
+2. **Fix each week's shift on Sunday with the last-week rule, and let the 11:55 forecast move each start by up to one hour either way.** A week ahead, without wind and solar forecasts, the rule does as well as a model and gives one start for the whole week. This gives staff a week's notice and keeps the legal 11 hours of rest. On 2025 it saves 4.13 million EUR a year, more than the daily choice under the same rest rule (4.01 million) and 128,000 more than the rule's weekly plan alone. The forecasting model's job is the day before, when tomorrow's load, wind and solar forecasts are out.
 3. **Use the price forecast, not the residual-load rule, for the daily choice.** It saves 83,000 EUR a year more on 2025 with free choice, and about 257,000 more once the rest rule is kept, because it weighs the 10 EUR/MWh premium in euros against the price gaps between hours.
 4. **Buy a commercial wind and solar forecast that is available before 12:00.** The TSO wind and solar forecasts we used are only due by 18:00, after the auction closes, and the results assume a forecast of similar quality bought the same morning.
 
 # 9. Limitations
 
-1. **Forecast timing.** The wind and solar forecasts in our data are due at 18:00 the day before, after the auction closes; only the load forecast is out in time. All results assume a commercial forecast of similar quality. A follow-up should rerun the test on one.
+1. **Forecast timing.** The wind and solar forecasts in our data are due by 18:00 the day before, after the auction closes; only the load forecast is out in time. All results assume a commercial forecast of similar quality. A follow-up should rerun the test on one.
 2. **A small and uncertain lead.** The lead over the residual-load rule rests on two validation years, one test year and nine months of reserve. Within 2025 it is unlikely to be luck, but its 95% interval runs from 3,700 to 181,000 EUR a year. More years, scored with a rolling refit, would narrow it.
 3. **Spikes.** Hours above 200 EUR/MWh are predicted 56.3 EUR/MWh too low on average. Scarcity features, such as how close residual load is to the available capacity, are the next thing to try.
 4. **A simplified decision.** Shifts start between 00:00 and 16:00 and stay within one day, premiums do not stack, and the plant is a price taker. Allowing shifts to cross midnight would open up night hours the plant cannot choose now.
 5. **No fuel price and no holidays.** The price level comes from recent electricity prices alone. A gas price series and a calendar of public holidays are the inputs most likely to improve the level and the shape of holidays.
 6. **Choices made after the test.** The selection rule changed, and the calendar decision was taken, after 2025 had been scored. The 2026 reserve, scored once with nothing changed after it, is the clean check, and it agrees.
 7. **LEAR refitted yearly.** The published benchmark refits daily, so our comparison likely understates it.
+8. **No weather a week ahead.** Our week-ahead model saw no wind or solar forecast, which is why a rule could match it. Commercial forecasts reach up to ten days ahead (energy & meteo systems n.d.). A follow-up should test the week-ahead model again with one, since that is the input most likely to let a model beat the rule a week out.
 
 # References
 
@@ -264,6 +283,8 @@ Chen, T. and Guestrin, C. (2016) 'XGBoost: A scalable tree boosting system', Pro
 Commission Regulation (EU) No 543/2013 of 14 June 2013 on submission and publication of data in electricity markets, Articles 6 and 14. Available at: https://eur-lex.europa.eu/eli/reg/2013/543
 
 Elmachtoub, A. N. and Grigas, P. (2022) 'Smart "predict, then optimize"', Management Science, 68(1), pp. 9-26. https://doi.org/10.1287/mnsc.2020.3922
+
+energy & meteo systems (n.d.) Market forecasts for wind and solar power in Europe. Available at: https://www.emsys-renewables.com/products/power_forecasts/market-forecasts-wind-solar.php
 
 Fraunhofer ISE (n.d.) Energy-Charts API. Available at: https://api.energy-charts.info
 
