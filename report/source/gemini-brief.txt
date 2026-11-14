@@ -1,0 +1,11 @@
+this was made by Claude and is not very structured, please make a new version in a report style and formal
+
+Context: this is a university group project report for DBA3803 Predictive Analytics (NUS), written for the course lecturer. Rewrite the attached Claude draft (draft-claude.md) as a formal business-analytics report. Use the attached outline (outline.md) for the section order and the point of each section, the attached fact sheet (facts.md) for every number, and the attached source cards (sources.txt) for every citation.
+
+Rules for the rewrite:
+- Every number must come from facts.md or the draft. Do not add numbers, results, methods, data sources or reasons that are not in the attached files.
+- Cite only the sources in sources.txt, and only for the claim each card says it backs. If you want to suggest a further source, list it separately after the references under the heading "Suggested sources (not cited)".
+- Keep the five figures exactly where the draft places them, with the same image lines (for example ![...](../figures/fig1-cheapest-start.png)) and their captions, and keep the five tables.
+- Keep the numbered recommendations and the numbered limitations.
+- Write in British English, in the first person plural ("we").
+- Reply with the whole report as Markdown, starting with the title. No preamble, no notes.
