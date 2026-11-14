@@ -515,7 +515,7 @@ rest_2025.join(rest_validation, on="schedule").select(
 # %% [markdown]
 # ## 6. Plan the week, adjust the day before
 #
-# Crews need their shifts planned well ahead, and the day-ahead forecast picks the better shift. This section combines the two. Each day's shift is planned on the Sunday before, as in section 4, and at 11:55 the day before, the day-ahead model may move that day's start a few hours from the plan. The crew then knows its shift a week ahead, and it moves by a few hours at most. The plan rests on the weaker week-ahead forecast, which has no weather input because no week-ahead TSO forecast exists (section 1), but it is still a forecast of the coming week's prices, not a fixed timetable.
+# Crews need their shifts planned well ahead, and the day-ahead forecast picks the better shift. This section combines the two. Each day's shift is planned on the Sunday before, as in section 4, and at 11:55 the day before, the day-ahead model may move that day's start a few hours from the plan. The crew then knows its shift a week ahead, and it moves by a few hours at most. The plan rests on the weaker week-ahead forecast, which has no weather input: no TSO publishes wind or solar forecasts a week ahead, and the week-ahead load forecast is not in this data (section 1), but it is still a forecast of the coming week's prices, not a fixed timetable.
 #
 # - Planned start: the week-ahead model's cheapest forecast shift, the schedule of section 4.
 # - Final start: the day-ahead model's cheapest forecast shift among the starts from `earlier` hours before to `later` hours after the planned one, still between 00:00 and 16:00. `pick_near_plan` in `lib/decision.py` makes this choice and `flex_check` scores it.
