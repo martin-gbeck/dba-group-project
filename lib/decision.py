@@ -145,8 +145,9 @@ def pick_weekly(windows: pl.DataFrame, score: str, keep_rest: bool) -> pl.DataFr
     With `keep_rest`, the weeks are picked in date order and a start more than 5 hours
     earlier than the previous week's last start is not allowed, so the rest rule holds
     at the week boundary as well as inside the week. On a 23-hour day with no window at
-    the week's start, the day takes the start with the next lowest weekly mean. One row
-    of `windows` per date."""
+    the week's start, the day takes the start with the next lowest weekly mean. The
+    25-hour October day has two windows starting at 02:00, and both count in that
+    start's mean. One row of `windows` per date."""
     with_totals = windows.with_columns(
         week=pl.col("date") - pl.duration(days=pl.col("date").dt.weekday() - 1)
     ).with_columns(week_mean=pl.col(score).mean().over("week", "start"))

@@ -1291,7 +1291,7 @@ pl.concat([pl.DataFrame(comparison_rows), references], how="diagonal_relaxed").s
 ).sort("saving_share", descending=True)
 
 # %% [markdown]
-# The two tree methods beat every reference on the mean, and LEAR falls short of the residual-load rule, 93.5% of the possible saving against 94.1%. Last week's mean price at each hour gets 87.9%, well ahead of same hour yesterday (73.7%) but 6 to 8 points behind the methods that see tomorrow's forecasts.
+# The two tree methods beat every reference on the mean, and LEAR falls short of the residual-load rule, 93.5% of the possible saving against 94.1%. Last week's mean price at each hour gets 87.9%, well ahead of same hour yesterday (73.7%) but 5.6 to 7.7 points behind the methods that see tomorrow's forecasts.
 #
 
 # %% [markdown]

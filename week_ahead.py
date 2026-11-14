@@ -845,7 +845,7 @@ rule_table = pl.DataFrame(
 rule_table
 
 # %% [markdown]
-# No variant beats `last-week`, which gets 87.8% in 2023 and 88.3% in 2024. `last-week-by-day` ties it exactly on the mean, and the two offset variants and `day-type-28-days` fall short by 0.5 to 1.9 points, inside their SEs. Looking back 4 weeks loses 2.0 points in both years, and the same day last week loses 11. One week of prices carries the season and the level best; a single day is too noisy. Among the ties `last-week` is the simplest, with one profile and one start a week, so it goes forward.
+# No variant beats `last-week`, which gets 87.8% in 2023 and 88.3% in 2024. Three tie with it: `last-week-by-day` exactly on the mean, and `day-type-28-days` and the day-type offset fall short by 1.9 and 0.5 points, inside their SEs. The other five lose in both years: by 0.7 points for `day-type-7-days`, 2.0 to 2.8 points for the 4-week, same-weekday and weekday-offset variants, and 11 points for the same day last week. One week of prices carries the season and the level best; a single day is too noisy. Among the ties `last-week` is the simplest, with one profile and one start a week, so it goes forward.
 #
 
 # %% [markdown]

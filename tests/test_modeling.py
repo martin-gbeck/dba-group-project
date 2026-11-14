@@ -43,12 +43,8 @@ def test_trailing_mean_steps_back_whole_weeks():
 
 def test_trailing_mean_skips_a_missing_hour():
     # the March clock change has no hour 2, so that day drops out at hour 2
-    prices = pl.concat(
-        [
-            prices_by_day([1, 2, 3], hours=3).filter(
-                ~((pl.col("date") == FIRST + timedelta(days=1)) & (pl.col("hour") == 2))
-            )
-        ]
+    prices = prices_by_day([1, 2, 3], hours=3).filter(
+        ~((pl.col("date") == FIRST + timedelta(days=1)) & (pl.col("hour") == 2))
     )
     table = prices.pipe(trailing_hourly_mean, 3)
     assert mean_on(table, 2, hour=2) == 2.0  # days 0 and 2
