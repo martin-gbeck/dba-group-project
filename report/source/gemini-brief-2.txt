@@ -1,0 +1,67 @@
+this was made by Claude and is not very structured, please make a new version in a report style and formal
+
+Context: this is a university group project report for DBA3803 Predictive Analytics (NUS), written for the course lecturer. You wrote the attached report (dba3803-report-gemini-factfixed.md) from a Claude draft; it has since been fact-checked. Some content is now missing or out of date. Below, Claude lists each missing or changed piece as bare facts with where it goes. The facts are notes, not text: write each piece in your own words as formal report prose, in the same style as the rest of the report. Use the attached fact sheet (facts.md) for every number and the attached source cards (sources.txt) for every citation. References like [facts 15] point to sections of facts.md; do not cite them in the text.
+
+Rules:
+- Every number must come from facts.md or the notes below. Do not add numbers, results, methods, data sources or reasons that are not in the attached files.
+- Cite only the sources in sources.txt, and only for the claim each card says it backs. If you want to suggest a further source, list it separately at the end under the heading "Suggested sources (not cited)".
+- Do not move, add or remove figures. You may refer to the existing Figures 1 to 5.
+- Keep the table format of the existing tables (same columns) and give each changed table in full.
+- Write in British English, in the first person plural ("we"). No em dashes. Never use the word "think".
+- Return ONLY the new and changed pieces, as Markdown. Head each piece with a line of the form
+  === PLACE: <exactly where it goes, e.g. "replaces the paragraph starting 'In short:'", "new paragraph after the paragraph ending '...'", "replaces Table 3"> ===
+  Leave everything else in the report alone: do not return unchanged sections. No preamble, no notes.
+
+PIECES TO WRITE
+
+1. NEW SUBSECTION in section 6, "Does the model's behaviour make business sense?" Course brief requires: does the model's behaviour make business sense; is it using sound logic; what was or would be changed. About 450 to 600 words. You choose where in section 6; if section 6 then needs subsection headings, give each as its own piece with its place.
+   Notes:
+   - feature ablation [facts 7.2]: no price memory: -31.4 points (SE 4.1); load and renewable forecasts: +10.3 points (SE 2.4) once price memory is in
+   - mechanism [facts 7.2 "Why"]: residual load -> position on merit order (plants ranked cheapest to dearest) -> which plant sets each hour's price -> shape of the day. That plant's cost mostly gas price; gas not in data; recent prices proxy for it
+   - calendar + fundamentals, no price memory: 64.4%; calendar alone: 84.0%. Likely (not proven) reason: without the price level, model reads small residual-load dips as worth paying the 10 EUR/MWh night/weekend premium
+   - chosen for the decision, not accuracy: neighbour price gaps (zone minus Germany, D-1) cut MAE 19.1 -> 17.5 EUR/MWh, worse shifts both validation years (-0.6 points, SE 0.3), dropped [facts 6, 7.2]
+   - Figure 4 (6 March 2025): level wrong, shape right, right shift; the decision uses only the shape. Refer, do not repeat numbers
+   - errors [facts 8]: above 200 EUR/MWh MAE 91.1, 241 hours; 0 to 200 MAE 16.1, 16,545 hours. Spikes = largest errors, not most of the error. asinh(price) tried, worse shifts, plain price kept; spikes listed as a limitation; details in 5.4
+   - changed after the presentation (first version's logic not sound):
+     (a) selection rule: old rule measured mostly how different 2023 and 2024 were; replaced by paired yearly gaps (4.3); final model XGBoost alone -> Lasso-then-XGBoost [facts 7.4]
+     (b) rest: free daily choice broke the 11-hour rule on 7.4% of 2025's days; 7.2 keeps it and prices it [facts 12]
+     (c) notice: 11:55 choice = one day's notice for the crew; 7.1 fixes the week on Sunday (simple rule as good as a model); 7.3 keeps a week's notice, day-ahead forecast moves the start up to 1 hour [facts 11, 15, 16]
+   - assumption data cannot fix: wind and solar forecasts due by 18:00 D-1 (not "published at"), after the auction closes; results assume a commercial forecast of similar quality bought the same morning (section 2) [facts 3, 14]
+
+2. TABLE 3 (section 6): new row between "Residual-load rule" and "Same hour yesterday": Last week's mean price at each hour | 89.1% | 3,982,000 | 52.0% | 26.8. Whole table.
+   Plus a short addition after the paragraph under Table 3. Notes [facts 9]: simplest day-before benchmark = each hour's mean price over past 7 days; 89.1%, 3.98 million EUR/yr; model about 305,000 EUR/yr more; reason: model has tomorrow's load, wind, solar forecasts, last week's prices do not.
+
+3. SECTION 7.1, new paragraphs after the existing two. Notes:
+   - vendor wind/solar forecasts for Germany up to 10 days ahead exist (card [11], energy & meteo systems n.d.); we have none -> week-ahead model has no weather input; it then sees little beyond last week's prices [facts 15b]
+   - so tested a simple rule against it, the "last-week rule" [facts 15]: Sunday 11:55; each clock hour's mean price, 7 days up to and incl. Sunday; + premium averaged over the week (10 EUR/MWh 22:00 to 06:00; 10 x 2/7 by day for weekends); cheapest 8-hour shift on that profile; same start Monday to Sunday
+   - validation [facts 15]: rule 88.1% (2023 87.8, 2024 88.3); model 86.1% (82.8, 89.4); gap +5.0 (2023), -1.1 (2024), SE 3.1 -> tie under 4.3; rule has no MAE -> simpler wins -> rule sets the week
+   - 8 variants (e.g. 4 weeks of history, weekday/weekend profiles): none better on validation; only the rule scored on 2025
+   - 2025: rule 89.0% (3.98 million); model 90.7% (4.05 million); one year does not overturn a two-year call; rule's 2023 lead 5.0 > model's 2025 lead 1.7
+   - start changes a year: rule 10, 19, 20 (2023, 2024, 2025); week-ahead model 101 to 127; daily choice 155 to 169; one start per week -> rest rule of 7.2 always holds within a week
+   - model's value: day before, when tomorrow's load/wind/solar forecasts exist; a week ahead they do not
+   - general point (ours, no citation): not every part of a business problem needs a model; here a rule matches it, is easier to explain to shift staff, costs nothing to run
+
+4. TABLE 4 (section 7.2): new row between "Week-ahead schedule" and "Residual-load rule": Last-week rule, one start a week | 2 (0.5%) | 89.0% | 91.5% | +22,000. Whole table.
+   Plus a new paragraph after the paragraph under Table 4. Notes [facts 15]: rule can break rest only on a Monday (new week's start > 5 h earlier than last week's); twice in 2025; with rest kept, new week's start at most 5 h earlier; cost 2025: none (saving +22,000); validation -69,000 (2023), -25,000 (2024); rest kept, 2025: rule 4.00 million vs day-ahead model 4.01 million, with a week's notice not a day's.
+
+5. TABLE 5 (section 7.3): first column header "Plan and reach"; the six existing week-ahead rows prefixed "Model's plan, " (e.g. "Model's plan, no move"); two rows added before "Any start (day-ahead choice)":
+   Last-week rule's plan, no move | 89.0% | 3,980,000 | 91.5% | 4,001,000 | 0%
+   Last-week rule's plan, 1 hour either way | 91.7% | 4,100,000 | 94.4% | 4,129,000 | 35%
+   Caption gains: model's plan = week-ahead model, rule's plan = last-week rule of 7.1. Whole table and caption.
+   Plus new paragraphs at the end of 7.3. Notes [facts 16]:
+   - same test with the rule's week as the plan; reaches 0 and 1 hour either way only
+   - two calls fixed before results, paired-gap rule on validation: move stays only if rule+1h beats rule alone; model's plan replaces rule's only if it beats it
+   - move: +2.0 points free (SE 0.9), +2.7 rest kept (SE 0.7), ahead both years each time -> stays
+   - plan: free +2.2 (SE 2.4), tie -> simpler rule; rest kept +2.2, ahead both years -> rule's plan stays
+   - recommended: rule's week + 1-hour move by the day-ahead model; rest kept, 2025: 4.13 million (94.4% of best rest-keeping schedule); +128,000 vs rule's plan alone; +85,000 vs model's plan with the same move (4.04 million); +121,000 vs daily choice under the rest rule (4.01 million)
+   - free choice 2025: model's plan + move 4.16 million vs rule's 4.10 million; but free choice breaks the rest rule, and the plans tie on validation
+
+6. "In short:" paragraph (end of section 1): last three sentences (from "Committing the entire weekly roster...") are out of date. Replace the paragraph; keep its first part as it is. Notes for the new end [facts 9, 15, 16]: no public week-ahead wind/solar forecast; a week ahead a simple rule (last week's cheapest shift, same start Monday to Sunday) sets the week as well as a model; the model's value is the day before; with rest kept, best = rule's weekly shift on Sunday + 11:55 forecast moves start up to 1 hour; 4.13 million EUR/yr on 2025 vs 4.01 million for free daily choice under the same rest rule.
+
+7. RECOMMENDATION 2 (section 8), replace. Notes [facts 16]: last-week rule fixes the week on Sunday; 11:55 forecast moves each start up to 1 hour either way; week ahead, no wind/solar forecasts, rule as good as a model, one start a week; a week's notice; legal 11-hour rest kept; 2025: 4.13 million vs 4.01 million (daily choice, same rest rule); +128,000 vs rule's plan alone; model's job = the day before. Drop the old "119,000 more than a rigid weekly schedule" and "four hours adds approximately 33,000": the rule's plan was tested with 0 and 1 hour only.
+
+8. LIMITATION 1 (section 9), replace. Notes [facts 3, 14]: wind and solar forecasts in our data due by 18:00 D-1 (not "published at"), after the 12:00 auction close; only the load forecast is out in time; all results, the residual-load rule's included, assume a commercial forecast of similar quality bought the same morning; follow-up: rerun on one.
+
+9. NEW LIMITATION 8 (section 9, after 7). Notes [facts 15b; card 11]: week-ahead model had no wind/solar forecast, which is why a rule could match it; commercial forecasts reach up to 10 days ahead (energy & meteo systems n.d.); follow-up: retest the week-ahead model with one, the input most likely to let a model beat the rule a week out. Do not claim it would.
+
+10. REFERENCES: add card [11] in the same style as the others, in alphabetical order.
