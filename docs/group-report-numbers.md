@@ -2,6 +2,8 @@
 
 Checked on 2026-11-15 against `report/group/DBA3803_Group10_Report_v3.docx`, after the repo went back to XGBoost alone as the final model (depth 3, learning rate 0.05, 200 trees) under the fold-SD rule, and both notebooks were rerun.
 
+**2026-11-16, v4.** `report/group/DBA3803_Group10_Report_v4.docx` takes the repo value in every row that was a mismatch or not in repo (Martin's call: the repo's numbers everywhere), rounded as the report rounds. Permutation importance is now computed in the main notebook (section 6, `permutation_importance` in `lib/evaluation.py`: the final model fitted per fold, each column shuffled in the validation year, five shuffles, mean of 2023 and 2024), and the rule's MAE for Table E1 in `wa` 8. Figures 5 and E1 are redrawn from the repo (`report/group/source/build_v4_figures.py`); the edits are scripted in `report/group/source/make_v4.py`. The Status column below is against v4; the Report column still quotes v3. v4 also corrects the forecast timing: only the wind and solar forecasts come at 18:00, the load forecast is out before the gate.
+
 Sources: `main` is `de_price_forecast.ipynb`, `wa` is `week_ahead.ipynb`, each by section. The report's section 8 and appendix E divide every rest-keeping schedule by the free daily hindsight; the repo values in those rows use the same denominator (`saving_share` in `wa` 8), so they can replace the report's one for one. `wa` 5 to 7 use the rest-keeping hindsight instead (`saving_share_rest`).
 
 Status: **match** means equal at the report's rounding. **mismatch** carries its cause. **not in repo** means the repo has no cell for it.
@@ -63,9 +65,9 @@ Status: **match** means equal at the report's rounding. **mismatch** carries its
 
 | Report | Repo | Source | Status |
 |---|---|---|---|
-| Shuffling residual load costs 64 points and raises MAE by about 20 EUR/MWh | 58 points, +19.6 (scratch) | none | not in repo (C) |
-| Yesterday's and last week's price at the same hour cost 3.1 and 1.9 points | 2.8 and 1.2; yesterday's maximum 1.8 sits between them (scratch) | none | not in repo (C) |
-| Then the 30-day mean and yesterday's maximum | yesterday's maximum 1.8, 30-day mean 0.4 (scratch) | none | not in repo (C) |
+| Shuffling residual load costs 64 points and raises MAE by about 20 EUR/MWh | 61.0 points, +19.6 | main 6, permutation importance | v4: 61 points, about 20 |
+| Yesterday's and last week's price at the same hour cost 3.1 and 1.9 points | 2.7 and 1.4 | main 6, permutation importance | v4: 2.7 and 1.4 |
+| Then the 30-day mean and yesterday's maximum | yesterday's maximum 1.3, then the 30-day mean 0.7 | main 6, permutation importance | v4: order swapped to match |
 | Price memory removed as a group costs 31 points | 0.958 − 0.644 = 31.4 | main 5.2 | match |
 
 ## Section 8
@@ -75,17 +77,17 @@ Status: **match** means equal at the report's rounding. **mismatch** carries its
 | €4.31M, 96.4%, €105,000 more than the rule | as section 6 | main 7.1 | match |
 | Daily plan changes the start on 135 days | 135 | wa 8, daily-xgboost 2025 | match |
 | Breaks the rest rule on 20 days, 5 of them a 16:00 shift then a 00:00 start | 20, 5 | wa 8, rest-break count | match |
-| Validation: last week's best hour 86.4% against week-ahead XGBoost 84.4%, fold SD 2.5 | 0.869 (SD 0.011) against 0.838 (SD 0.052); a tie under rule 1 either way | wa 8, validation table | mismatch (A, B) |
+| Validation: last week's best hour 86.4% against week-ahead XGBoost 84.4%, fold SD 2.5 | 0.869 (SD 0.011) against 0.838 (SD 0.052); a tie under rule 1 either way | wa 8, validation table | v4: 86.9% against 83.8%, fold SD 5.2 |
 | Table 6, daily XGBoost: 96.4%, €4.31M, 20 rest breaks, 135 start changes | 0.964, 4,309,336, 20, 135 | wa 8 | match |
 | Table 6, daily XGBoost + rest rule: 91.0%, €4.07M, 0, 154 | 0.910, 4,069,121, 0, 154 | wa 8 | match |
-| Table 6, weekly, last week's best hour: 89.9%, €4.02M, 0, 21 | 0.895, 4,001,426, 0, 19 | wa 8, weekly-last-week-rest | mismatch (A) |
-| Table 6, weekly, week-ahead XGBoost: 90.1%, €4.02M, 0, 16 | 0.900, 4,021,970, 0, 11 | wa 8, weekly-week-ahead-model-rest | mismatch (B) |
+| Table 6, weekly, last week's best hour: 89.9%, €4.02M, 0, 21 | 0.895, 4,001,426, 0, 19 | wa 8, weekly-last-week-rest | v4: 89.5%, €4.00M, 0, 19 |
+| Table 6, weekly, week-ahead XGBoost: 90.1%, €4.02M, 0, 16 | 0.900, 4,021,970, 0, 11 | wa 8, weekly-week-ahead-model-rest | v4: 90.0%, €4.02M, 0, 11 |
 | Table 6, weekly, perfect foresight: 91.8%, €4.10M, 0, 19 | 0.918, 4,104,060, 0, 19 | wa 8, weekly-hindsight-rest | match |
-| Weekly gives up about €293,000 against the free daily plan, interval €135,000 to €458,000 | 307,910; 7-day 149,644 to 483,064 | wa 8, bootstrap | mismatch (D) |
-| Daily plan with rest leads the weekly by €53,000, interval −€151,000 to €216,000 | 67,695; 7-day −137,494 to 244,199 | wa 8, bootstrap | mismatch (D) |
-| 2026 reserve, weekly: 92.9%, €5.32M | 0.931, 5,329,625 | wa 8, weekly-last-week-rest 2026 | mismatch (A) |
+| Weekly gives up about €293,000 against the free daily plan, interval €135,000 to €458,000 | 307,910; 7-day 149,644 to 483,064 | wa 8, bootstrap | v4: €308,000, €150,000 to €483,000 |
+| Daily plan with rest leads the weekly by €53,000, interval −€151,000 to €216,000 | 67,695; 7-day −137,494 to 244,199 | wa 8, bootstrap | v4: €68,000, −€137,000 to €244,000 |
+| 2026 reserve, weekly: 92.9%, €5.32M | 0.931, 5,329,625 | wa 8, weekly-last-week-rest 2026 | v4: 93.1%, €5.33M |
 | Table 7, today: €15.21M | 15,208,612 | wa 8, standard-shift 2025 | match |
-| Table 7, weekly last week's best hour: €11.19M, saving €4.02M, cut 26.4% | 11,207,186; 4,001,426; 26.3% | wa 8 | mismatch (A) |
+| Table 7, weekly last week's best hour: €11.19M, saving €4.02M, cut 26.4% | 11,207,186; 4,001,426; 26.3% | wa 8 | v4: €11.21M, €4.00M, 26.3% |
 | Table 7, daily XGBoost with rest rule: €11.14M, €4.07M, 26.8%, 154 start changes | 11,139,491; 4,069,121; 26.8%; 154 | wa 8 | match |
 | Table 7, daily XGBoost unrestricted: €10.90M, €4.31M, 28.3%, 20 days of short rest | 10,899,276; 4,309,336; 28.3%; 20 | wa 8 | match |
 | The weekly plan costs about 7% of the daily model's saving | (4.309 − 4.001) / 4.309 = 7.1% | wa 8 | match |
@@ -127,14 +129,14 @@ Status: **match** means equal at the report's rounding. **mismatch** carries its
 
 | Report | Repo | Source | Status |
 |---|---|---|---|
-| E1, last week's best hour: 86.4%, fold SD 2.5, MAE 33.2, MAE fold SD 0.6 | 0.869, 0.011; MAE 30.8, SD 0.3 (scratch, the rule's 7-day profile as a forecast) | wa 8, validation table | mismatch (A) |
-| E1, week-ahead XGBoost: 84.4%, 0.7, MAE 30.9, 5.1 | 0.838, 0.052; MAE 29.5, SD 4.7 | wa 8, validation table; wa 4 | mismatch (B) |
-| E1, day-ahead forecasts (reference): 87.9%, 3.1 | 0.880, 0.030 | wa 8, weekly-day-ahead-model-rest | match at 88%, off by 0.1 point: the teammate's weekly planner (summed premium, rest carried by week) |
-| E1, perfect foresight (reference): 89.4%, 1.8 | 0.894, 0.017 | wa 8, weekly-hindsight-rest | match |
+| E1, last week's best hour: 86.4%, fold SD 2.5, MAE 33.2, MAE fold SD 0.6 | 0.869, 0.011; MAE 30.8, SD 0.3 (the rule's 7-day profile as a forecast) | wa 8, validation table; wa 8, E1 MAE cell | v4: 86.9%, 1.1, 30.8, 0.3 |
+| E1, week-ahead XGBoost: 84.4%, 0.7, MAE 30.9, 5.1 | 0.838, 0.052; MAE 29.5, SD 4.7 | wa 8, validation table; wa 8, E1 MAE cell | v4: 83.8%, 5.2, 29.5, 4.7 |
+| E1, day-ahead forecasts (reference): 87.9%, 3.1 | 0.880, 0.030 | wa 8, weekly-day-ahead-model-rest | v4: 88.0%, 3.0 |
+| E1, perfect foresight (reference): 89.4%, 1.8 | 0.894, 0.017 (89.42%, 1.72) | wa 8, weekly-hindsight-rest | v4: 89.4%, 1.7 |
 | E2, daily XGBoost: 98.7%, €5.65M, 4 rest breaks, 96 start changes | 0.987, 5,649,573, 4, 96 | wa 8, daily-xgboost 2026 | match |
 | E2, daily XGBoost + rest rule: 98.0%, €5.61M, 0, 98 | 0.980, 5,614,454, 0, 98 | wa 8 | match |
-| E2, weekly, last week's best hour: 92.9%, €5.32M, 0, 17 | 0.931, 5,329,625, 0, 15 | wa 8 | mismatch (A) |
-| E2, weekly, week-ahead XGBoost: 93.0%, €5.33M, 0, 15 | 0.930, 5,328,181, 0, 10 | wa 8 | mismatch (B) |
+| E2, weekly, last week's best hour: 92.9%, €5.32M, 0, 17 | 0.931, 5,329,625, 0, 15 | wa 8 | v4: 93.1%, €5.33M, 0, 15 |
+| E2, weekly, week-ahead XGBoost: 93.0%, €5.33M, 0, 15 | 0.930, 5,328,181, 0, 10 | wa 8 | v4: 93.0%, €5.33M, 0, 10 |
 | E2, weekly, perfect foresight: 96.9%, €5.55M, 0, 16 | 0.969, 5,549,116, 0, 16 | wa 8 | match |
 
 ## The missing row: the rule's week, moved up to an hour by the day-ahead model, rest kept

@@ -81,6 +81,7 @@ import polars as pl
 from plotnine import (
     aes,
     annotate,
+    coord_flip,
     element_text,
     facet_wrap,
     geom_col,
@@ -106,6 +107,7 @@ from lib.evaluation import (
     block_bootstrap_means,
     cross_validate,
     evaluate,
+    permutation_importance,
     summarise_folds,
 )
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
@@ -371,11 +373,11 @@ df.null_count().unpivot(variable_name="column", value_name="null_hours").filter(
 # | Column | Known up to | Why |
 # |---|---|---|
 # | `price_da` (target) | end of D-1 | D-1 cleared in the auction on D-2, so lags of 24 h and more |
-# | `fc_load`, `fc_solar`, `fc_wind_*`, `fc_residual` | end of D, as a stand-in | The TSO's day-D forecast is published 18:00 D-1, after the gate. See below |
+# | `fc_load`, `fc_solar`, `fc_wind_*`, `fc_residual` | end of D, as a stand-in | The TSO's day-D wind and solar forecasts are published 18:00 D-1, after the gate; the load forecast before it. See below |
 # | `price_FR` ... `price_NO2` | end of D-1 | Day D clears in the same auction as DE-LU, so lags of 24 h and more |
 # | calendar | any date | Fixed in advance |
 #
-# The `fc_*` columns are the TSOs' forecasts. They are computed at 08:00 D-1 but published at 18:00 D-1, six hours after the auction closes, so a trader bidding at 11:55 cannot see them and buys a forecast from a commercial vendor instead. Those are paid and we have no access, so the TSO forecast stands in for one. Both are made the same morning from the same weather models and should be close, but our errors could differ slightly from what a model fed a vendor forecast would get.
+# The `fc_*` columns are the TSOs' forecasts. The wind and solar forecasts are computed at 08:00 D-1 but published at 18:00 D-1, six hours after the auction closes (the load forecast is out before the gate), so a trader bidding at 11:55 cannot see them and buys a forecast from a commercial vendor instead. Those are paid and we have no access, so the TSO forecast stands in for one. Both are made the same morning from the same weather models and should be close, but our errors could differ slightly from what a model fed a vendor forecast would get.
 #
 # The data holds no actuals, which removes the most common leak in this problem.
 #
@@ -1826,6 +1828,52 @@ pl.DataFrame(
 
 # %% [markdown]
 # Tried, worse: the asinh target lowers the saving share from 95.6% to 93.1% and raises MAE from 17.0 to 18.0 EUR/MWh. Compressing the spikes also compresses the gaps between hours that pick the shift. The final model stays as it is.
+#
+
+# %% [markdown]
+# What does the final model rely on? `permutation_importance` in `lib/evaluation.py` fits the final model on each fold's training years, shuffles one column at a time in the validation year, which breaks that column's link with the price, and scores again. `saving_share_lost` is the saving share unshuffled minus shuffled, in points; `mae_added` is the MAE shuffled minus unshuffled, in EUR/MWh. Each is the mean over 2023, 2024 and five shuffles per year.
+#
+
+# %%
+importance = permutation_importance(
+    XGBRegressor(random_state=0, **FINAL_SETTINGS), FINAL_COLUMNS, dev, FOLDS
+).with_columns(
+    feature_group=pl.col("column").replace_strict(group_of),
+    saving_share_lost=pl.col("saving_share_lost") * 100,
+)
+
+(
+    ggplot(
+        importance,
+        aes(
+            "reorder(column, saving_share_lost)",
+            "saving_share_lost",
+            fill="feature_group",
+        ),
+    )
+    + geom_col()
+    + geom_text(
+        aes(label="saving_share_lost"),
+        format_string="{:.1f}",
+        ha="left",
+        nudge_y=1,
+        size=8,
+    )
+    + coord_flip()
+    + labs(
+        x="",
+        y="saving share lost when the column is shuffled, percentage points",
+        fill="",
+        title="What the final model relies on, 2023 and 2024",
+    )
+    + theme(legend_position="top")
+)
+
+# %%
+importance
+
+# %% [markdown]
+# Forecast residual load dominates: shuffling it costs 61.0 points of saving share and adds 19.6 EUR/MWh to the MAE. Next come the price at the same hour yesterday (2.7 points) and a week earlier (1.4), then yesterday's maximum (1.3) and the 30-day mean (0.7), which carry the level. Every other column moves the saving share by less than half a point, either way: load, wind and solar are already inside residual load, and each price-memory column shares its information with the other seven.
 #
 
 # %% [markdown]

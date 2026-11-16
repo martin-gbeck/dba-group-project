@@ -152,3 +152,51 @@ def block_bootstrap_means(
     starts = rng.integers(0, n - block_days + 1, size=(samples, runs_per_sample))
     positions = (starts[:, :, None] + np.arange(block_days)).reshape(samples, -1)[:, :n]
     return values[positions].mean(axis=1)
+
+
+def permutation_importance(
+    model: Regressor,
+    columns: list[str],
+    data: pl.DataFrame,
+    folds: dict[str, int],
+    repeats: int = 5,
+    seed: int = 0,
+) -> pl.DataFrame:
+    """How much the model relies on each column: fit a fresh copy on each fold's training
+    years, then shuffle one column at a time in the validation year, which breaks its
+    link with the price, and score again. Each column is shuffled `repeats` times per
+    year.
+
+    Returns one row per column, largest loss first:
+
+    - `saving_share_lost`: the saving share unshuffled minus shuffled, mean over the
+      validation years and the repeats.
+    - `mae_added`: the MAE shuffled minus unshuffled, EUR/MWh, the same mean.
+    """
+    rng = np.random.default_rng(seed)
+    rows: list[dict[str, str | float]] = []
+    for fit, valid in make_folds(data, folds).values():
+        fold_model = deepcopy(model)
+        fold_model.fit(df_to_np(fit, columns), fit["price_da"].to_numpy())
+        inputs = df_to_np(valid, columns)
+        base = evaluate(valid, fold_model.predict(inputs))
+        for position, column in enumerate(columns):
+            for _ in range(repeats):
+                shuffled = inputs.copy()
+                shuffled[:, position] = rng.permutation(shuffled[:, position])
+                scores = evaluate(valid, fold_model.predict(shuffled))
+                rows.append(
+                    {
+                        "column": column,
+                        "saving_share_lost": base["saving_share"]
+                        - scores["saving_share"],
+                        "mae_added": cast(float, scores["mae"])
+                        - cast(float, base["mae"]),
+                    }
+                )
+    return (
+        pl.DataFrame(rows)
+        .group_by("column", maintain_order=True)
+        .agg(pl.col("saving_share_lost").mean(), pl.col("mae_added").mean())
+        .sort("saving_share_lost", descending=True)
+    )

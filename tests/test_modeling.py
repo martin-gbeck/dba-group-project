@@ -2,10 +2,11 @@
 
 from datetime import date, timedelta
 
+import numpy as np
 import polars as pl
 import pytest
 
-from lib.evaluation import fold_sd_lead
+from lib.evaluation import fold_sd_lead, permutation_importance
 from lib.modeling import trailing_hourly_mean
 
 FIRST = date(2025, 1, 1)
@@ -58,3 +59,49 @@ def test_fold_sd_lead_is_the_mean_gap_against_the_larger_fold_sd():
     assert gap == pytest.approx(0.005)
     # the first option's SD, sqrt(2) * 0.02, is the larger of the two
     assert bar == pytest.approx(0.04 / 2**0.5)
+
+
+class FirstColumn:
+    """A stand-in model that predicts the first input column as the price."""
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> object:
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return X[:, 0]
+
+
+def two_years_of_hours() -> pl.DataFrame:
+    """Weekday hours over 2023 and 2024, cheapest at a different hour each day, with a
+    `signal` column equal to the price and a `noise` column the model never reads."""
+    rows = []
+    for year in (2023, 2024):
+        for d in range(20):
+            day = date(year, 1, 2) + timedelta(days=d)
+            for hour in range(24):
+                price = 0.0 if (d % 17) <= hour < (d % 17) + 8 else 100.0 + hour
+                rows.append(
+                    {
+                        "date": day,
+                        "year": year,
+                        "hour": hour,
+                        "weekday": 1,
+                        "price_da": price,
+                        "price_lag24": 50.0,
+                        "signal": price,
+                        "noise": float(hour * d),
+                    }
+                )
+    return pl.DataFrame(rows)
+
+
+def test_permutation_importance_charges_only_the_column_the_model_reads():
+    table = permutation_importance(
+        FirstColumn(), ["signal", "noise"], two_years_of_hours(), {"fold-1": 2024}
+    )
+    rows = {row["column"]: row for row in table.iter_rows(named=True)}
+    assert table["column"].to_list() == ["signal", "noise"]
+    assert rows["signal"]["saving_share_lost"] > 0.5
+    assert rows["signal"]["mae_added"] > 0.0
+    assert rows["noise"]["saving_share_lost"] == 0.0
+    assert rows["noise"]["mae_added"] == 0.0

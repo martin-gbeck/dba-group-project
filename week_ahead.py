@@ -1222,6 +1222,36 @@ schedules.select(
 #
 
 # %% [markdown]
+# The price error of the two weekly methods on the validation years, for the report's Table E1: the `last-week` rule's 7-day profile read as a price forecast, and the week-ahead model's out-of-fold forecast (section 4). `mae` is the mean of the two years, `mae_fold_sd` the SD between them.
+#
+
+# %%
+rule_maes = [
+    dev_rules.filter(pl.col("year") == year)
+    .select((pl.col("price_da") - pl.col("last-week")).abs().mean())
+    .item()
+    for year in FOLDS.values()
+]
+pl.DataFrame(
+    [
+        {
+            "method": "last-week",
+            "mae": float(np.mean(rule_maes)),
+            "mae_fold_sd": float(np.std(rule_maes, ddof=1)),
+        },
+        {
+            "method": "week-ahead",
+            "mae": validation["week-ahead"]["mae"],
+            "mae_fold_sd": validation["week-ahead"]["mae_fold_sd"],
+        },
+    ]
+)
+
+# %% [markdown]
+# As a price forecast the rule's 7-day profile misses by 30.8 EUR/MWh on the validation years (fold SD 0.3), the week-ahead model by 29.5 (fold SD 4.7). The model's lower MAE does not carry over to the shifts: one start a week from the rule gets 86.9% on the report's denominator against the model's 83.8%, a gap inside the model's fold SD of 5.2 points, so the two tie and the simpler rule stays.
+#
+
+# %% [markdown]
 # How sure are the 2025 gaps between schedules? The same block bootstrap as section 7.2 of the main notebook, on the daily lead of one schedule over another: the cost of the day's shift under `behind` minus its cost under `ahead`, positive when `ahead` was cheaper. `lead_eur_per_year` is its mean times 365, and `low_95`, `high_95` and `at_or_below_0_share` read as there. Three pairs: the plan-then-move schedule against `daily-xgboost-rest`, and the two gaps the group report bootstraps, `daily-xgboost` and `daily-xgboost-rest` each against `weekly-last-week-rest`.
 #
 
