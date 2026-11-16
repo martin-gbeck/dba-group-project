@@ -3,7 +3,9 @@
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 
+from lib.evaluation import fold_sd_lead
 from lib.modeling import trailing_hourly_mean
 
 FIRST = date(2025, 1, 1)
@@ -49,3 +51,10 @@ def test_trailing_mean_skips_a_missing_hour():
     table = prices.pipe(trailing_hourly_mean, 3)
     assert mean_on(table, 2, hour=2) == 2.0  # days 0 and 2
     assert mean_on(table, 2, hour=1) == 2.0  # days 0, 1 and 2
+
+
+def test_fold_sd_lead_is_the_mean_gap_against_the_larger_fold_sd():
+    gap, bar = fold_sd_lead([0.90, 0.94], [0.91, 0.92])
+    assert gap == pytest.approx(0.005)
+    # the first option's SD, sqrt(2) * 0.02, is the larger of the two
+    assert bar == pytest.approx(0.04 / 2**0.5)

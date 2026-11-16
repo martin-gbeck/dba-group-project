@@ -6,9 +6,8 @@ Every function works on the hourly table built in notebook section 4.2, which ca
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, TypedDict, cast
+from typing import TypedDict, cast
 
 import numpy as np
 import polars as pl
@@ -38,21 +37,11 @@ class Scores(TypedDict):
 
 
 class CVScores(Scores):
-    """Scores averaged over the validation years, with the saving share and MAE of each
-    year kept, in fold order, for the paired comparisons."""
+    """Scores averaged over the validation years, with how far two of them move from
+    year to year."""
 
-    saving_share_folds: list[float]  # one saving share per validation year
-    mae_folds: list[Metric]  # one MAE per validation year
-
-
-class Comparison(TypedDict):
-    """Rule 1 between two options, from their gaps on each validation year."""
-
-    saving_share_gap: float  # mean over the years of first minus second
-    saving_share_gap_se: float  # SD of the yearly gaps / sqrt(number of years)
-    mae_gap: Metric  # mean over the years of first minus second, EUR/MWh
-    mae_gap_se: Metric
-    winner: str  # the name of the option that leads, or "tie" on both counts
+    saving_share_fold_sd: Metric  # SD of the yearly saving shares
+    mae_fold_sd: Metric  # SD of the yearly MAEs
 
 
 def evaluate(
@@ -115,8 +104,8 @@ def cross_validate(
     """Fit a fresh copy of the model on each fold's training years, score its validation
     year, and average over the folds. The model passed in stays unfitted.
 
-    Returns the averaged scores, with each year's saving share and MAE, and the
-    out-of-fold predictions for diagnostics.
+    Returns the averaged scores, with `saving_share_fold_sd` and `mae_fold_sd` as the
+    noise between folds, and the out-of-fold predictions for diagnostics.
     """
     scores: list[Scores] = []
     oof: list[pl.DataFrame] = []
@@ -130,69 +119,24 @@ def cross_validate(
 
 
 def summarise_folds(scores: list[Scores]) -> CVScores:
-    """Average the validation years' scores and keep each year's saving share and MAE."""
+    """Average the validation years' scores and add the SD of the saving share and of MAE
+    across those years."""
     table = pl.DataFrame(scores)
     summary = {column: table[column].mean() for column in table.columns}
-    summary["saving_share_folds"] = [score["saving_share"] for score in scores]
-    summary["mae_folds"] = [score["mae"] for score in scores]
+    summary["saving_share_fold_sd"] = table["saving_share"].std()
+    summary["mae_fold_sd"] = table["mae"].std()
     # the table's columns are exactly the keys of Scores, so the averages plus the two
-    # yearly lists make a CVScores
+    # SDs make a CVScores
     return cast(CVScores, summary)
 
 
-def paired_gap(first: list[float], second: list[float]) -> tuple[float, float]:
-    """The mean of the yearly gaps first minus second, and its standard error, the SD of
-    the gaps over the square root of the number of years."""
-    gaps = np.array(first) - np.array(second)
-    return float(gaps.mean()), float(gaps.std(ddof=1) / np.sqrt(len(gaps)))
-
-
-def compare(
-    first: Mapping[str, Any], second: Mapping[str, Any], names: tuple[str, str]
-) -> Comparison:
-    """Rule 1 without its last step: the option whose mean yearly gap in saving share is
-    more than one standard error in its favour leads; within one standard error, the
-    same test on MAE, where lower is better, decides. `first` and `second` carry
-    `saving_share_folds` and `mae_folds`, as `cross_validate` returns them. An option
-    without MAE, such as the residual-load rule, ties on MAE. The simpler option on a tie
-    on both counts is left to the reader."""
-    saving_gap, saving_se = paired_gap(
-        first["saving_share_folds"], second["saving_share_folds"]
-    )
-    has_mae = None not in first["mae_folds"] + second["mae_folds"]
-    mae_gap, mae_se = (
-        paired_gap(first["mae_folds"], second["mae_folds"]) if has_mae else (None, None)
-    )
-    if saving_gap > saving_se:
-        winner = names[0]
-    elif -saving_gap > saving_se:
-        winner = names[1]
-    elif mae_gap is not None and mae_se is not None and -mae_gap > mae_se:
-        winner = names[0]
-    elif mae_gap is not None and mae_se is not None and mae_gap > mae_se:
-        winner = names[1]
-    else:
-        winner = "tie"
-    return Comparison(
-        saving_share_gap=saving_gap,
-        saving_share_gap_se=saving_se,
-        mae_gap=mae_gap,
-        mae_gap_se=mae_se,
-        winner=winner,
-    )
-
-
-def best_setting(settings: pl.DataFrame) -> pl.DataFrame:
-    """Rule 2: the one-row frame of the setting with the lowest MAE among those the top
-    setting by saving share does not lead, by mean yearly gap beyond one standard error.
-    `settings` holds one row per setting with the columns `cross_validate` returns."""
-    top = settings.sort("saving_share", descending=True).row(0, named=True)
-    within_reach = [
-        paired_gap(top["saving_share_folds"], row["saving_share_folds"])
-        for row in settings.iter_rows(named=True)
-    ]
-    ties_with_top = pl.Series([gap <= se for gap, se in within_reach])
-    return settings.filter(ties_with_top).sort("mae").head(1)
+def fold_sd_lead(first: list[float], second: list[float]) -> tuple[float, float]:
+    """Rule 1's test on one metric from each option's validation-year scores: the gap in
+    the mean, first minus second, and the bar a lead must clear, the larger of the two
+    options' fold SDs (each the SD of its yearly scores)."""
+    gap = float(np.mean(first) - np.mean(second))
+    bar = max(float(np.std(first, ddof=1)), float(np.std(second, ddof=1)))
+    return gap, bar
 
 
 def block_bootstrap_means(

@@ -1,5 +1,7 @@
 # A decision rule for the week ahead
 
+**Out of date since 2026-11-15.** The model-based numbers here come from Lasso-then-XGBoost, the final model under the paired-gap rule, which was reverted. With XGBoost alone as the final model, the current numbers are in the notebooks it names and in `docs/group-report-numbers.md`. Rule-only numbers (the `last-week` rule on its own) did not change.
+
 Source: `week_ahead.ipynb` section 7 (helpers `trailing_hourly_mean` in `lib/modeling.py`, `week_mean_premium` and `pick_weekly` in `lib/decision.py`), and the `last-7-days-mean` reference in sections 5.1 and 7.1 of `de_price_forecast.ipynb`.
 
 ## The rule

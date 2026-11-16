@@ -10,12 +10,14 @@ from lib.decision import (
     cheapest_with_rest,
     count_rest_breaks,
     flex_check,
+    make_plan,
     pick_freely,
     pick_near_plan,
     pick_weekly,
     pick_with_rest,
     premium,
     rest_check,
+    schedule_summary,
     shift_windows,
     week_mean_premium,
 )
@@ -329,3 +331,55 @@ def test_pick_weekly_is_not_fooled_by_a_start_missing_on_the_short_day():
     windows = frame.pipe(shift_windows, {"price": pl.col("price_da") + 1000.0})
     picks = windows.pipe(pick_weekly, "price", False)
     assert picks["start"].to_list() == [9] * 7
+
+
+def test_schedule_summary_scores_rest_hindsight_on_both_denominators():
+    # day 1 at 16:00 and day 2 at 00:00 is the free hindsight and breaks the rest rule,
+    # so the best rest-keeping sequence saves less than free hindsight
+    frame = days_cheapest_at([16, 0], other_prices=[1.0, 100.0])
+    windows = frame.pipe(shift_windows, score(frame))
+    table = windows.pipe(
+        schedule_summary,
+        {
+            "free-hindsight": windows.pipe(pick_freely, "cost"),
+            "rest-hindsight": windows.pipe(cheapest_with_rest),
+        },
+    )
+    free = table.filter(pl.col("schedule") == "free-hindsight").row(0, named=True)
+    rest = table.filter(pl.col("schedule") == "rest-hindsight").row(0, named=True)
+    assert free["saving_share"] == 1.0
+    assert free["rest_breaks"] == 1
+    assert rest["rest_breaks"] == 0
+    assert rest["saving_share_rest_hindsight"] == pytest.approx(1.0)
+    assert rest["saving_share"] < 1.0
+    assert free["saving_share_rest_hindsight"] > 1.0
+
+
+def test_schedule_summary_cost_plus_saving_is_the_standard_cost():
+    frame = days_cheapest_at([6, 8, 10, 9])
+    windows = frame.pipe(shift_windows, score(frame))
+    standard = windows.filter(pl.col("start") == 6)
+    table = windows.pipe(
+        schedule_summary,
+        {"standard": standard, "hindsight": windows.pipe(pick_freely, "cost")},
+    )
+    rows = {row["schedule"]: row for row in table.iter_rows(named=True)}
+    assert rows["standard"]["saving_share"] == 0.0
+    assert rows["standard"]["start_changes"] == 0
+    assert rows["hindsight"]["start_changes"] == 3
+    assert rows["hindsight"]["cost_eur_per_year"] + rows["hindsight"][
+        "saving_eur_per_year"
+    ] == pytest.approx(rows["standard"]["cost_eur_per_year"])
+
+
+def test_make_plan_picks_daily_weekly_or_with_rest():
+    frame = days_cheapest_at([16, 0, 0])
+    windows = frame.pipe(shift_windows, score(frame))
+    assert windows.pipe(make_plan, "price", False)["start"].to_list() == [16, 0, 0]
+    assert windows.pipe(make_plan, "price", True)["start"].to_list() == [16, 11, 6]
+    weekly = calendar_days([9, 9, 9, 3, 9, 9, 9])
+    weekly_windows = weekly.pipe(shift_windows, score(weekly))
+    assert (
+        weekly_windows.pipe(make_plan, "price", False, True)["start"].to_list()
+        == [9] * 7
+    )

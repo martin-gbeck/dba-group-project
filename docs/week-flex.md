@@ -1,5 +1,7 @@
 # Plan the week, adjust the day before: text for the report
 
+**Out of date since 2026-11-15.** The model-based numbers here come from Lasso-then-XGBoost, the final model under the paired-gap rule, which was reverted. With XGBoost alone as the final model, the current numbers are in the notebooks it names and in `docs/group-report-numbers.md`. Rule-only numbers (the `last-week` rule on its own) did not change.
+
 Source: `week_ahead.ipynb` section 6, 2025 test year and the 2023 and 2024 validation years. Helpers `pick_near_plan` and `flex_check` in `lib/decision.py`.
 
 Crews need their shifts well ahead, and the day-ahead forecast picks the better shift, so we combined the two. Each day's shift is planned on the Sunday before with the week-ahead model, and at 11:55 the day before, the final day-ahead model may move that day's start within a few hours of the plan: up to W hours either way, or only earlier. A reach of one hour either way lifts the 2025 saving share from 90.7% to 93.1%, or from 4.05 to 4.16 million EUR a year against the standard shift, winning back about 105,000 of the 233,000 EUR a year that fixing the week costs. The start moves on about a third of days, and wider reaches add little (93.8% at four hours). On the validation years the gain is smaller, about 74,000 of a 438,000 EUR gap at one hour. Moving earlier only wins back roughly half as much as moving either way.

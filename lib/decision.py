@@ -321,6 +321,58 @@ def pick_near_plan(
     return near.pipe(pick_freely, score)
 
 
+def make_plan(
+    windows: pl.DataFrame, score: str, keep_rest: bool, weekly_plan: bool = False
+) -> pl.DataFrame:
+    """The plan a plan-then-move schedule starts from: each day's lowest `score`, or one
+    start a week with `weekly_plan`, picked by `pick_weekly`; with `keep_rest`, kept
+    within the rest rule. One row of `windows` per date, for `pick_near_plan`."""
+    if weekly_plan:
+        return windows.pipe(pick_weekly, score, keep_rest)
+    if keep_rest:
+        return windows.pipe(pick_with_rest, score)
+    return windows.pipe(pick_freely, score)
+
+
+def schedule_summary(
+    windows: pl.DataFrame, picks: dict[str, pl.DataFrame]
+) -> pl.DataFrame:
+    """One row per named schedule, each given as its picks, one row of `windows` per
+    date:
+
+    - `rest_breaks`: days that start less than 11 hours after the day before's shift.
+    - `start_changes`: days whose start differs from the day before's.
+    - `saving_share`: `(standard - picked) / (standard - hindsight)` from the period's
+      total costs, with the free daily hindsight as the denominator for every schedule,
+      rest kept or not.
+    - `saving_share_rest_hindsight`: the same against hindsight under the rest rule,
+      the denominator `rest_check` and `flex_check` use for rest-keeping schedules.
+    - `saving_eur_per_year`: the saving against the standard 06:00 shift, over a year.
+    - `cost_eur_per_year`: the schedule's own electricity plus premium, over a year.
+    """
+    days = windows["date"].n_unique()
+    standard = float(windows.filter(pl.col("start") == STANDARD_SHIFT[0])["cost"].sum())
+    free_hindsight = float(windows.pipe(pick_freely, "cost")["cost"].sum())
+    rest_hindsight = float(windows.pipe(cheapest_with_rest)["cost"].sum())
+    rows: list[dict[str, str | int | float]] = []
+    for name, chosen in picks.items():
+        cost = float(chosen["cost"].sum())
+        rows.append(
+            {
+                "schedule": name,
+                "days": days,
+                "rest_breaks": count_rest_breaks(chosen),
+                "start_changes": count_start_changes(chosen),
+                "saving_share": (standard - cost) / (standard - free_hindsight),
+                "saving_share_rest_hindsight": (standard - cost)
+                / (standard - rest_hindsight),
+                "saving_eur_per_year": (standard - cost) / days * 365,
+                "cost_eur_per_year": cost / days * 365,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
 def flex_check(
     frame: pl.DataFrame,
     plan_score: pl.Expr,
@@ -355,12 +407,7 @@ def flex_check(
     }
     rows: list[dict[str, str | int | bool | float]] = []
     for keep_rest in (False, True):
-        if weekly_plan:
-            plan = windows.pipe(pick_weekly, "plan", keep_rest)
-        elif keep_rest:
-            plan = windows.pipe(pick_with_rest, "plan")
-        else:
-            plan = windows.pipe(pick_freely, "plan")
+        plan = windows.pipe(make_plan, "plan", keep_rest, weekly_plan)
         for name, (earlier, later) in reaches.items():
             picks = windows.pipe(
                 pick_near_plan, "final", plan, earlier, later, keep_rest

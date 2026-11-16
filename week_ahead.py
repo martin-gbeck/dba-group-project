@@ -30,6 +30,7 @@
 #     - 7.2 The rule against the week-ahead model
 #     - 7.3 Rest and start changes
 #     - 7.4 The rule's plan, adjusted the day before
+# - 8\. Every schedule on one denominator, with the 2026 reserve
 # - What a week's notice costs
 #
 # ## Objective
@@ -76,20 +77,33 @@ from plotnine import (
     theme_minimal,
     theme_set,
 )
+from xgboost import XGBRegressor
 
 from lib.data_schemas import CombinedDataSchema
-from lib.decision import flex_check, premium, rest_check, week_mean_premium
+from lib.decision import (
+    complete_shift_windows,
+    flex_check,
+    make_plan,
+    pick_freely,
+    pick_near_plan,
+    pick_weekly,
+    pick_with_rest,
+    premium,
+    rest_check,
+    schedule_summary,
+    week_mean_premium,
+)
 from lib.evaluation import (
     CVScores,
     Scores,
-    compare,
+    block_bootstrap_means,
     cross_validate,
     evaluate,
-    paired_gap,
+    fold_sd_lead,
     summarise_folds,
 )
 from lib.fetching import fetch_de_prices, fetch_forecasts, fetch_neighbor_prices
-from lib.modeling import LassoThenXGB, df_to_np, trailing_hourly_mean
+from lib.modeling import df_to_np, trailing_hourly_mean
 from lib.splitting import make_folds
 
 # a kernel has no terminal, so polars would squeeze every table into ~100 characters
@@ -228,7 +242,7 @@ features = features.sort("utc_timestamp").with_columns(
 )
 
 # %% [markdown]
-# Write out both column lists, and the columns each Lasso stage sees. As in the main notebook, the day-ahead Lasso gets residual load and solar in place of the five forecasts. The week-ahead model has no forecasts, so its Lasso sees every column.
+# Write out both column lists.
 #
 
 # %%
@@ -248,11 +262,6 @@ DAY_AHEAD_COLUMNS = [
     "prev_day_max",
     "mean_7d",
     "mean_30d",
-]
-DAY_AHEAD_LINEAR = [
-    column
-    for column in DAY_AHEAD_COLUMNS
-    if column not in ("fc_load", "fc_wind_onshore", "fc_wind_offshore")
 ]
 WEEK_AHEAD_COLUMNS = [
     *CALENDAR,
@@ -293,7 +302,7 @@ pl.DataFrame(
 #
 
 # %% [markdown]
-# Split the table into the development years and the 2025 test year. Each model drops only the first days of 2019 that its own columns cannot fill, so the day-ahead rows are exactly the main notebook's `dev`. The 2026 reserve is not used here.
+# Split the table into the development years and the 2025 test year. Each model drops only the first days of 2019 that its own columns cannot fill, so the day-ahead rows are exactly the main notebook's `dev`. The 2026 reserve is used only in section 8.
 #
 
 # %%
@@ -337,7 +346,7 @@ pl.DataFrame(
 # %% [markdown]
 # ## 3. The model
 #
-# Both rows use the main notebook's final model with its settings unchanged: Lasso-then-XGBoost, a penalty of 3, 500 trees 6 levels deep, a learning rate of 0.03. Nothing is tuned for the week-ahead inputs. The question is what the shorter view costs, and a new search now, with 2025 already scored, would be choosing on the test year again.
+# Both rows use the main notebook's final model with its settings unchanged: XGBoost alone, 200 trees 3 levels deep, a learning rate of 0.05. Nothing is tuned for the week-ahead inputs. The question is what the shorter view costs, and a new search now, with 2025 already scored, would be choosing on the test year again.
 #
 # The week-ahead model is scored on 2025 as well. It does not compete with the day-ahead model for anything: the final model in the main notebook stays final whatever this one scores, so the 2025 number cannot feed back into a choice.
 #
@@ -347,20 +356,15 @@ pl.DataFrame(
 #
 
 # %%
-FINAL_SETTINGS = {
-    "alpha": 3.0,
-    "max_depth": 6,
-    "learning_rate": 0.03,
-    "n_estimators": 500,
-}
+FINAL_SETTINGS = {"max_depth": 3, "learning_rate": 0.05, "n_estimators": 200}
 models = {
     "day-ahead": (
-        LassoThenXGB(DAY_AHEAD_COLUMNS, DAY_AHEAD_LINEAR, **FINAL_SETTINGS),
+        XGBRegressor(random_state=0, **FINAL_SETTINGS),
         DAY_AHEAD_COLUMNS,
         dev_day_ahead,
     ),
     "week-ahead": (
-        LassoThenXGB(WEEK_AHEAD_COLUMNS, WEEK_AHEAD_COLUMNS, **FINAL_SETTINGS),
+        XGBRegressor(random_state=0, **FINAL_SETTINGS),
         WEEK_AHEAD_COLUMNS,
         dev_week_ahead,
     ),
@@ -384,6 +388,7 @@ models = {
 
 # %%
 validation: dict[str, CVScores] = {}
+validation_years: dict[str, list[Scores]] = {}  # 2023, then 2024
 test_scores: dict[str, Scores] = {}
 validation_forecasts: dict[str, pl.DataFrame] = {}  # out-of-fold, 2023 and 2024
 test_forecasts: dict[str, np.ndarray] = {}
@@ -391,6 +396,13 @@ for name, (model, columns, dev) in models.items():
     validation[name], validation_forecasts[name] = cross_validate(
         model, columns, dev, FOLDS
     )
+    validation_years[name] = [
+        evaluate(year_frame, year_frame["pred"].to_numpy())
+        for year_frame in (
+            validation_forecasts[name].filter(pl.col("year") == year)
+            for year in FOLDS.values()
+        )
+    ]
     _ = model.fit(df_to_np(dev, columns), dev["price_da"].to_numpy())
     test_forecasts[name] = model.predict(df_to_np(test_2025, columns))
     test_scores[name] = evaluate(test_2025, test_forecasts[name])
@@ -424,7 +436,8 @@ per_fold = [
     for fit, valid in make_folds(dev_day_ahead, FOLDS).values()
 ]
 for name in ("last-year-profile", "standard-shift"):
-    validation[name] = summarise_folds([fold[name] for fold in per_fold])
+    validation_years[name] = [fold[name] for fold in per_fold]
+    validation[name] = summarise_folds(validation_years[name])
 test_scores |= reference_scores(dev_day_ahead, test_2025)
 
 # %% [markdown]
@@ -449,9 +462,9 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# A week ahead, the model gets 86.1% of the possible saving on the validation years and 90.7% on 2025, against 96.7% and 95.9% for the day-ahead model. On 2025 that is 4.05 million EUR a year instead of 4.29 million: fixing the week early costs about 230,000 EUR a year, and it still saves a million more than last year's profile.
+# A week ahead, the model gets 86.1% of the possible saving on the validation years and 87.2% on 2025, against 95.6% and 96.4% for the day-ahead model. On 2025 that is 3.90 million EUR a year instead of 4.31 million: fixing the week early costs about 410,000 EUR a year, and it still saves about 850,000 more than last year's profile.
 #
-# Its price forecast is worse than same hour yesterday (MASE 1.03), yet it picks the shift well. The level is hard to see a week out, but the shift only depends on the shape of the day, and the clock and last week's prices carry most of that. Year by year it gets 82.8% in 2023, 89.4% in 2024 and 90.7% in 2025: worst in 2023, the first year after the gas crisis, when the level moved most.
+# Its price forecast is worse than same hour yesterday (MASE 1.02), yet it picks the shift well. The level is hard to see a week out, but the shift only depends on the shape of the day, and the clock and last week's prices carry most of that. Year by year it gets 83.6% in 2023, 88.7% in 2024 and 87.2% in 2025: worst in 2023, the first year after the gas crisis, when the level moved most.
 #
 
 # %% [markdown]
@@ -522,7 +535,7 @@ rest_2025.join(rest_validation, on="schedule").select(
 )
 
 # %% [markdown]
-# The week-ahead schedule breaks the rest rule on 12 days of 2025 (3.3%) and on 40 validation days (5.5%), about half as often as the day-ahead model. Keeping the rule costs it 129,000 EUR a year, against 279,000 for the day-ahead model. With rest kept on both, choosing each day the day before saves about 83,000 EUR a year more than fixing the week on Sunday, instead of about 230,000.
+# The week-ahead schedule breaks the rest rule on 15 days of 2025 (4.1%) and on 40 validation days (5.5%), against 20 and 74 for the day-ahead model. Keeping the rule costs it 66,000 EUR a year, against 240,000 for the day-ahead model. With rest kept on both, choosing each day the day before saves about 236,000 EUR a year more than fixing the week on Sunday, instead of about 410,000.
 #
 
 # %% [markdown]
@@ -585,9 +598,9 @@ flex = flex_2025.join(flex_validation, on=["reach", "keep_rest"]).select(
 flex
 
 # %% [markdown]
-# Choosing freely, a reach of one hour either way lifts the 2025 saving share from 90.7% to 93.1%, or 4.16 million EUR a year: about 105,000 of the 233,000 EUR a year that a week's notice costs. Wider reaches add little, 93.8% at four hours, and the start moves on about 35% of days, by 0.35 to 0.54 hours on average. On the validation years the gain is smaller, from 86.1% to 87.9% at one hour and 88.9% at four, about 74,000 and 118,000 of a 438,000 gap. Moving earlier only wins back roughly half as much as moving either way.
+# Choosing freely, a reach of one hour either way lifts the 2025 saving share from 87.2% to 89.3%, or 3.99 million EUR a year: about 94,000 of the 410,000 EUR a year that a week's notice costs. Wider reaches add little, 90.2% at four hours, and the start moves on 35% to 37% of days, by 0.35 to 0.52 hours on average. On the validation years the gain is similar, from 86.1% to 88.2% at one hour and 88.5% at four, about 82,000 and 95,000 of a 387,000 gap. Moving earlier only wins back less than half as much as moving either way.
 #
-# With the rest rule kept, every either-way reach of one hour or more saves more than choosing each day the day before: 4.04 million EUR a year at one hour and 4.08 million at four, against 4.01 million on 2025, and 3.56 and 3.61 million against 3.29 million on the validation years. The likely reason is the one in section 8.4 of the main notebook. Choosing one day at a time under the rule, a late shift today can rule out a cheap early shift tomorrow; a plan that already keeps the rule holds each day's choice near a sequence that works.
+# With the rest rule kept, the move recovers more. On the validation years every either-way reach of one hour or more saves more than choosing each day the day before, 3.60 million EUR a year at one hour and 3.61 million at four against 3.15 million. The likely reason is the one in section 8.4 of the main notebook: choosing one day at a time under the rule, a late shift today can rule out a cheap early shift tomorrow, and a plan that already keeps the rule holds each day's choice near a sequence that works. On 2025 the effect is smaller and the order flips: 3.92 million at one hour and 3.94 million at four, against 4.07 million for choosing each day the day before.
 #
 
 # %% [markdown]
@@ -655,7 +668,7 @@ references = pl.concat(
     + labs(
         x="hours the day-ahead choice may move the planned start",
         y="share of the possible saving, 2025",
-        title="A one-hour move wins back half of what a week's notice costs, and all of it with rest kept",
+        title="Moving the planned start by up to an hour wins back a quarter to a third of what a week's notice costs",
     )
     + theme(legend_position="none")
 )
@@ -667,7 +680,9 @@ references = pl.concat(
 #
 # The rule, `last-week`: on the decision Sunday, take each clock hour's mean settled price over the 7 days up to and including that Sunday, add the premium averaged over a week (`week_mean_premium`: the full 10 EUR/MWh from 22:00 to 06:00, two sevenths of it by day, the weekend's share), and run the cheapest 8-hour start from Monday to Sunday. Every day of the week gets the same score, so the week has one start.
 #
-# Two new tools, besides the main notebook's `compare` and `paired_gap` from `lib/evaluation.py`:
+# Three new tools:
+#
+# - `fold_sd_lead(first, second)`, in `lib/evaluation.py`: rule 1's test from the main notebook on one metric. It returns the gap in the mean over 2023 and 2024, first minus second, and the bar the gap must clear, the larger of the two options' fold SDs.
 #
 # - `trailing_hourly_mean(prices, days, every)`, in `lib/modeling.py`: for each date and hour, the mean price at that hour over the `days` days ending on that date, `every` days apart. `every=7` averages the same weekday over several weeks. An hour missing from a day, such as 02:00 on the March clock change, drops out of the mean.
 # - `pick_weekly(windows, score, keep_rest)`, in `lib/decision.py`: one start for each Monday-to-Sunday week, the one whose score averaged over the week's days is lowest. With `keep_rest`, the new week's start may be at most 5 hours earlier than the last week's. `rest_check` and `flex_check` use it for schedules passed as weekly.
@@ -686,7 +701,7 @@ references = pl.concat(
 # | `last-week-plus-day-type-offset` | `last-week` plus how much the day's type (weekday or weekend) differed from the 28-day mean at that hour | one a day |
 # | `last-week-plus-weekday-offset` | `last-week` plus how much the same weekday over 4 weeks differed from the 28-day mean at that hour | one a day |
 #
-# The rule goes forward unless a variant beats it under rule 1 of the main notebook: a lead in saving share larger than one standard error of the paired yearly gaps, the SD of the 2023 and 2024 gaps over √2. Rules have no MAE, so a tie on saving share goes to the simpler rule, and `last-week` is the simplest: one profile and one start a week. Only `last-week` is scored on 2025, as a no-model reference beside the week-ahead model; no variant is.
+# The rule goes forward unless a variant beats it under rule 1 of the main notebook: a lead in mean saving share larger than the larger of the two fold SDs. Rules have no MAE, so a tie on saving share goes to the simpler rule, and `last-week` is the simplest: one profile and one start a week. Only `last-week` is scored on 2025, as a no-model reference beside the week-ahead model; no variant is.
 #
 
 # %% [markdown]
@@ -810,32 +825,34 @@ def score_rule(frame: pl.DataFrame, name: str) -> Scores:
     return evaluate(frame, profile, report_error=False)
 
 
-rule_validation = {
-    name: summarise_folds(
-        [
-            dev_rules.filter(pl.col("year") == year).pipe(score_rule, name)
-            for year in FOLDS.values()
-        ]
-    )
-    for name in RULES
-}
+for name in RULES:
+    validation_years[name] = [
+        dev_rules.filter(pl.col("year") == year).pipe(score_rule, name)
+        for year in FOLDS.values()
+    ]
+rule_validation = {name: summarise_folds(validation_years[name]) for name in RULES}
+
+
+def saving_shares(name: str) -> list[float]:
+    """The saving share of a model or rule in 2023 and 2024."""
+    return [scores["saving_share"] for scores in validation_years[name]]
+
+
 rule_table = pl.DataFrame(
     [
         {
             "rule": name,
             "one_start_a_week": RULES[name][1],
-            "saving_share_2023": scores["saving_share_folds"][0],
-            "saving_share_2024": scores["saving_share_folds"][1],
+            "saving_share_2023": saving_shares(name)[0],
+            "saving_share_2024": saving_shares(name)[1],
             "saving_share_validation": scores["saving_share"],
+            "saving_share_fold_sd": scores["saving_share_fold_sd"],
             "saving_eur_per_year_validation": scores["saving_eur_per_year"],
         }
         | dict(
             zip(
-                ("gap_to_last_week", "gap_se"),
-                paired_gap(
-                    scores["saving_share_folds"],
-                    rule_validation["last-week"]["saving_share_folds"],
-                ),
+                ("gap_to_last_week", "larger_fold_sd"),
+                fold_sd_lead(saving_shares(name), saving_shares("last-week")),
                 strict=True,
             )
         )
@@ -845,28 +862,34 @@ rule_table = pl.DataFrame(
 rule_table
 
 # %% [markdown]
-# No variant beats `last-week`, which gets 87.8% in 2023 and 88.3% in 2024. Three tie with it: `last-week-by-day` exactly on the mean, and `day-type-28-days` and the day-type offset fall short by 1.9 and 0.5 points, inside their SEs. The other five lose in both years: by 0.7 points for `day-type-7-days`, 2.0 to 2.8 points for the 4-week, same-weekday and weekday-offset variants, and 11 points for the same day last week. One week of prices carries the season and the level best; a single day is too noisy. Among the ties `last-week` is the simplest, with one profile and one start a week, so it goes forward.
+# No variant beats `last-week`, which gets 87.8% in 2023 and 88.3% in 2024. Three tie with it: `last-week-by-day` exactly on the mean, and `day-type-28-days` and the day-type offset fall short by 1.9 and 0.5 points, inside their larger fold SDs of 3.6 and 1.6. The other five lose by more than the larger fold SD: by 0.7 points for `day-type-7-days`, 2.0 to 2.8 points for the 4-week, same-weekday and weekday-offset variants, and 11 points for the same day last week. One week of prices carries the season and the level best; a single day is too noisy. Among the ties `last-week` is the simplest, with one profile and one start a week, so it goes forward.
 #
 
 # %% [markdown]
 # ### 7.2 The rule against the week-ahead model
 #
-# The same rule 1 between the rule and the week-ahead model of section 4, from their saving shares in 2023 and 2024. A positive `saving_share_gap` favours the rule.
+# The same rule 1 between the rule and the week-ahead model of section 4, from their saving shares in 2023 and 2024. A positive `saving_share_gap` favours the rule; it leads if the gap is larger than `larger_fold_sd`.
 #
 
 # %%
 pl.DataFrame(
     [
-        compare(
-            rule_validation["last-week"],
-            validation["week-ahead"],
-            ("last-week", "week-ahead"),
+        dict(
+            zip(
+                ("saving_share_gap", "larger_fold_sd"),
+                fold_sd_lead(saving_shares("last-week"), saving_shares("week-ahead")),
+                strict=True,
+            )
         )
+        | {
+            "rule_fold_sd": rule_validation["last-week"]["saving_share_fold_sd"],
+            "model_fold_sd": validation["week-ahead"]["saving_share_fold_sd"],
+        }
     ]
 )
 
 # %% [markdown]
-# The rule gets 2.0 points more of the possible saving than the week-ahead model on the mean: 5.0 points more in 2023 and 1.1 less in 2024. The SE of 3.1 covers that gap, so the two tie, and with no MAE for the rule the simpler option wins. A week ahead, the shifts are set by the rule, not by the model.
+# The rule gets 1.9 points more of the possible saving than the week-ahead model on the mean: 4.2 points more in 2023 and 0.4 less in 2024. The model's fold SD of 3.6 points covers that gap, so the two tie, and with no MAE for the rule the simpler option wins. A week ahead, the shifts are set by the rule, not by the model.
 #
 
 # %% [markdown]
@@ -880,8 +903,8 @@ pl.DataFrame(
     [
         {
             "method": name,
-            "saving_share_2023": validation[name]["saving_share_folds"][0],
-            "saving_share_2024": validation[name]["saving_share_folds"][1],
+            "saving_share_2023": saving_shares(name)[0],
+            "saving_share_2024": saving_shares(name)[1],
             "saving_share_validation": validation[name]["saving_share"],
             "saving_share_2025": test_scores[name]["saving_share"],
             "saving_eur_per_year_2025": test_scores[name]["saving_eur_per_year"],
@@ -891,7 +914,7 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# On 2025 the rule gets 89.0% of the possible saving, 3.98 million EUR a year, and the week-ahead model 90.7%, 4.05 million. The model's 1.7-point lead there is smaller than the rule's 5.0-point lead in 2023, and one year cannot overturn a call made on the validation years. Both stay far below the day-ahead model's 95.9%.
+# On 2025 the rule gets 89.0% of the possible saving, 3.98 million EUR a year, and the week-ahead model 87.2%, 3.90 million, so the rule leads on the test year as well. Both stay far below the day-ahead model's 96.4%.
 #
 
 # %% [markdown]
@@ -935,7 +958,7 @@ rest_by_year.filter(pl.col("schedule") != "residual-load-rule").select(
 ).sort("schedule", "year")
 
 # %% [markdown]
-# The rule changes its start on 10 to 20 days a year, against 101 to 127 for the week-ahead model and 155 to 169 for the day-ahead model. Choosing freely, it breaks the rest rule 2 or 3 times a year, always at a week boundary, and keeping the rule costs it at most 69,000 EUR a year (2023). With rest kept it gets 91.4% to 91.8% of what the best rest-keeping schedule saves, more than the week-ahead model (89.1% to 90.6%) in every year. On 2025 it then saves 4.00 million EUR a year, the same as the day-ahead model under the rule (4.01 million), and in 2023 and 2024 it saves more.
+# The rule changes its start on 10 to 20 days a year, against 111 to 148 for the week-ahead model and 135 to 177 for the day-ahead model. Choosing freely, it breaks the rest rule 2 or 3 times a year, always at a week boundary, and keeping the rule costs it at most 69,000 EUR a year (2023). With rest kept it gets 91.4% to 91.8% of what the best rest-keeping schedule saves, more than the week-ahead model (87.7% to 90.8%) in every year. On 2025 it then saves 4.00 million EUR a year, about 68,000 less than the day-ahead model under the rule (4.07 million); in 2023 and 2024 it saves more.
 #
 
 # %% [markdown]
@@ -945,8 +968,8 @@ rest_by_year.filter(pl.col("schedule") != "residual-load-rule").select(
 #
 # Two calls, each under rule 1 on the validation years and fixed before the scores:
 #
-# 1. The one-hour move stays on top of the rule's plan only if `rule plan, either-way-1h` leads `rule plan, either-way-0h` by more than one standard error.
-# 2. Between the two plans with the same reach, the rule's plan stays unless the model's plan leads it by more than one standard error, since a rule is simpler than a model.
+# 1. The one-hour move stays on top of the rule's plan only if `rule plan, either-way-1h` leads `rule plan, either-way-0h` by more than the larger fold SD.
+# 2. Between the two plans with the same reach, the rule's plan stays unless the model's plan leads it by more than the larger fold SD, since a rule is simpler than a model.
 #
 
 # %%
@@ -1027,8 +1050,8 @@ pl.DataFrame(
         }
         | dict(
             zip(
-                ("saving_share_gap", "saving_share_gap_se"),
-                paired_gap(
+                ("saving_share_gap", "larger_fold_sd"),
+                fold_sd_lead(
                     nudge_folds(*first, keep_rest), nudge_folds(*second, keep_rest)
                 ),
                 strict=True,
@@ -1040,11 +1063,202 @@ pl.DataFrame(
 )
 
 # %% [markdown]
-# The one-hour move stays on the rule's plan. It adds 2.0 points on the validation years with an SE of 0.9 when choosing freely, and 2.7 with an SE of 0.7 with rest kept, ahead in both years each time. On 2025 it lifts the rule from 3.98 to 4.10 million EUR a year, and from 4.00 to 4.13 million with rest kept, moving the start on about 35% to 38% of days.
+# The one-hour move stays on the rule's plan. It adds 1.8 points on the validation years against a larger fold SD of 1.6 when choosing freely, and 2.6 against 1.3 with rest kept, ahead in both years each time. On 2025 it lifts the rule from 3.98 to 4.08 million EUR a year, and from 4.00 to 4.11 million with rest kept, moving the start on about 31% to 33% of days.
 #
-# Between the two plans, the rule's never loses. Choosing freely, its 2.2-point lead with the move sits inside an SE of 2.4, a tie the simpler rule takes; with rest kept it leads by 2.2 points in both years. On 2025 the model's plan with the move saves more choosing freely (4.16 against 4.10 million) and less with rest kept (4.04 against 4.13 million).
+# Between the two plans, the rule's never loses. With the move, its lead of 1.7 points choosing freely sits inside a larger fold SD of 4.1, and its 1.1 points with rest kept inside 1.3: two ties, which the simpler rule takes. Without the move and with rest kept, it leads by 0.9 points against 0.3. On 2025 the rule's plan with the move saves more than the model's in both settings: 4.08 against 3.99 million choosing freely, 4.11 against 3.92 million with rest kept.
 #
-# So the selection rule picks the decision rule's plan, with the day-ahead model allowed to move each start by up to an hour. With rest kept, as the law requires, that saves 4.13 million EUR a year on 2025, 94.4% of what the best rest-keeping schedule saves, against 4.01 million for choosing each day the day before under the same law.
+# So the selection rule picks the decision rule's plan, with the day-ahead model allowed to move each start by up to an hour. With rest kept, as the law requires, that saves 4.11 million EUR a year on 2025, 93.9% of what the best rest-keeping schedule saves, against 4.07 million for choosing each day the day before under the same law.
+#
+
+# %% [markdown]
+# ## 8. Every schedule on one denominator, with the 2026 reserve
+#
+# Sections 5 to 7 score a rest-keeping schedule against the best rest-keeping sequence. The group report divides every schedule by the free daily hindsight instead, so a rest-keeping schedule can never reach 100%. This section scores the schedules the report compares, and the one it leaves out, on both denominators, each year on its own:
+#
+# - `daily-xgboost`: the day-ahead model, each day chosen freely (section 4).
+# - `daily-xgboost-rest`: the same with the rest rule kept day by day (section 5).
+# - `weekly-last-week-rest`: the `last-week` rule's week, rest kept at the week boundary (section 7.3).
+# - `weekly-week-ahead-model-rest`: one start a week from the week-ahead model's forecast plus the premium of each day, picked by `pick_weekly`, rest kept. Section 4's week-ahead model picks one start a day; the report's weekly row holds one start a week.
+# - `weekly-hindsight-rest`: one start a week from the cleared prices, rest kept: the best any weekly schedule can do.
+# - `weekly-day-ahead-model-rest`: one start a week from the day-ahead model's forecasts of the week's days, rest kept. Those forecasts do not exist on the Sunday, so this is a reference for how much the weather adds, not a schedule the plant could run.
+# - `last-week-plan-move-1h-rest`: the `last-week` rule's week as the plan, then the day-ahead model moves each start up to an hour either way the day before, rest kept (section 7.4).
+#
+# Columns, from `schedule_summary` in `lib/decision.py`:
+#
+# - `saving_share`: `(standard - picked) / (standard - hindsight)` from the year's total costs, with the free daily hindsight as the denominator, as in the report.
+# - `saving_share_rest_hindsight`: the same over the best rest-keeping sequence, as in sections 5 to 7.
+# - `saving_eur_per_year`, `cost_eur_per_year`: the saving against the standard 06:00 shift and the schedule's own electricity plus premium, each over a year, for 500 MWh a day.
+# - `rest_breaks`, `start_changes`: days that start too soon after the day before's shift, and days whose start differs from the day before's.
+#
+# The 2026 reserve, 2026-01-01 to 2026-10-11, is scored with both models refitted on 2019 to 2025 with the same settings, as the main notebook's 7.4 does for the day-ahead model. Nothing is chosen on it.
+#
+
+# %% [markdown]
+# Refit both models on everything before 2026 and forecast the reserve.
+#
+
+# %%
+RESERVE_YEAR = 2026
+before_reserve = features.filter(pl.col("year") < RESERVE_YEAR)
+reserve_2026 = features.filter(pl.col("year") == RESERVE_YEAR).join(
+    rule_frame.select("utc_timestamp", "last-week"), on="utc_timestamp"
+)
+reserve_forecasts: dict[str, np.ndarray] = {}
+for name, (model, columns, _) in models.items():
+    fit_rows = before_reserve.drop_nulls(columns)
+    _ = model.fit(df_to_np(fit_rows, columns), fit_rows["price_da"].to_numpy())
+    reserve_forecasts[name] = model.predict(df_to_np(reserve_2026, columns))
+rest_frames["2026"] = reserve_2026.with_columns(
+    day_ahead=pl.Series(reserve_forecasts["day-ahead"]),
+    week_ahead=pl.Series(reserve_forecasts["week-ahead"]),
+)
+reserve_2026.select(
+    first_day=pl.col("date").min(),
+    last_day=pl.col("date").max(),
+    missing_values=pl.sum_horizontal(
+        pl.col(*DAY_AHEAD_COLUMNS, *WEEK_AHEAD_COLUMNS, "last-week").null_count()
+    ),
+)
+
+# %% [markdown]
+# The reserve has no missing input.
+#
+
+# %% [markdown]
+# Pick each schedule in each year and summarise it on both denominators.
+#
+
+
+# %%
+def report_picks(windows: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """The schedules the group report compares, plus the plan-then-move row, each as
+    one pick per day."""
+    rule_plan = windows.pipe(make_plan, "last_week", True, True)
+    return {
+        "daily-xgboost": windows.pipe(pick_freely, "day_ahead"),
+        "daily-xgboost-rest": windows.pipe(pick_with_rest, "day_ahead"),
+        "weekly-last-week-rest": rule_plan,
+        "weekly-week-ahead-model-rest": windows.pipe(pick_weekly, "week_ahead", True),
+        "weekly-hindsight-rest": windows.pipe(pick_weekly, "cost", True),
+        "weekly-day-ahead-model-rest": windows.pipe(pick_weekly, "day_ahead", True),
+        "last-week-plan-move-1h-rest": windows.pipe(
+            pick_near_plan, "day_ahead", rule_plan, 1, 1, True
+        ),
+        "standard-shift": windows.filter(pl.col("start") == 6),
+    }
+
+
+REPORT_SCORES = {
+    "day_ahead": pl.col("day_ahead") + premium(),
+    "week_ahead": pl.col("week_ahead") + premium(),
+    "last_week": pl.col("last-week") + week_mean_premium(),
+}
+picks_by_year: dict[str, dict[str, pl.DataFrame]] = {}
+summaries: list[pl.DataFrame] = []
+for year, frame in rest_frames.items():
+    windows = frame.sort("utc_timestamp").pipe(complete_shift_windows, REPORT_SCORES)
+    picks_by_year[year] = report_picks(windows)
+    summaries.append(
+        windows.pipe(schedule_summary, picks_by_year[year]).with_columns(
+            year=pl.lit(year)
+        )
+    )
+schedules = pl.concat(summaries)
+schedules.select(
+    "schedule",
+    "year",
+    "saving_share",
+    "saving_share_rest_hindsight",
+    "saving_eur_per_year",
+    "cost_eur_per_year",
+    "rest_breaks",
+    "start_changes",
+).sort("schedule", "year")
+
+# %% [markdown]
+# On 2025 the plan-then-move schedule saves 4.11 million EUR a year with no rest breaks: 91.9% of the free daily hindsight saving, 93.9% of the rest-keeping one. That is level with the best weekly schedule in hindsight (4.10 million) and 37,000 EUR a year more than the day-ahead model under the rest rule (4.07 million, 91.0%), with 104 start changes against 154. On this denominator the rule's own week gets 89.5% (4.00 million) and the week-ahead model's weekly start 90.0% (4.02 million). On the 2026 reserve the plan-then-move schedule gets 95.8%, 5.49 million EUR a year, behind the day-ahead model with rest kept (98.0%, 5.61 million) and ahead of every weekly schedule but hindsight (93.1% for the rule's week).
+#
+
+# %% [markdown]
+# Of the free day-ahead schedule's rest breaks in 2025, count those where a 16:00 to 24:00 shift is followed by a 00:00 start, which leaves no rest at all.
+#
+
+# %%
+(
+    picks_by_year["2025"]["daily-xgboost"]
+    .sort("date")
+    .select(
+        rest_breaks=(pl.col("start").diff() < -5).sum(),
+        no_rest_at_all=((pl.col("start").shift() == 16) & (pl.col("start") == 0)).sum(),
+    )
+)
+
+# %% [markdown]
+# 5 of the 20 rest breaks in 2025 are a 16:00 shift followed by a 00:00 start, with no rest at all.
+#
+
+# %% [markdown]
+# The validation view: each schedule's mean over 2023 and 2024, with its fold SD.
+#
+
+# %%
+(
+    schedules.filter(pl.col("year").is_in(["2023", "2024"]))
+    .group_by("schedule", maintain_order=True)
+    .agg(
+        saving_share_validation=pl.col("saving_share").mean(),
+        saving_share_fold_sd=pl.col("saving_share").std(),
+        saving_share_rest_hindsight_validation=pl.col(
+            "saving_share_rest_hindsight"
+        ).mean(),
+        saving_eur_per_year_validation=pl.col("saving_eur_per_year").mean(),
+        rest_breaks_validation=pl.col("rest_breaks").mean(),
+        start_changes_validation=pl.col("start_changes").mean(),
+    )
+)
+
+# %% [markdown]
+# On the validation years the plan-then-move schedule gets 89.4% on the report's denominator, level with the weekly hindsight (89.4%) and well ahead of the day-ahead model under the rest rule (77.5%), which lost most in 2023 (69.1%). One start a week from the day-ahead model's forecasts would give 88.0%, but those forecasts do not exist on the Sunday.
+#
+
+# %% [markdown]
+# How sure are the 2025 gaps between schedules? The same block bootstrap as section 7.2 of the main notebook, on the daily lead of one schedule over another: the cost of the day's shift under `behind` minus its cost under `ahead`, positive when `ahead` was cheaper. `lead_eur_per_year` is its mean times 365, and `low_95`, `high_95` and `at_or_below_0_share` read as there. Three pairs: the plan-then-move schedule against `daily-xgboost-rest`, and the two gaps the group report bootstraps, `daily-xgboost` and `daily-xgboost-rest` each against `weekly-last-week-rest`.
+#
+
+# %%
+LEAD_PAIRS = [
+    ("last-week-plan-move-1h-rest", "daily-xgboost-rest"),
+    ("daily-xgboost", "weekly-last-week-rest"),
+    ("daily-xgboost-rest", "weekly-last-week-rest"),
+]
+lead_rows: list[dict[str, str | float]] = []
+for ahead, behind in LEAD_PAIRS:
+    daily_lead = (
+        picks_by_year["2025"][behind]
+        .select("date", behind_cost="cost")
+        .join(picks_by_year["2025"][ahead].select("date", ahead_cost="cost"), on="date")
+        .sort("date")
+        .select(pl.col("behind_cost") - pl.col("ahead_cost"))
+        .to_series()
+        .to_numpy()
+    )
+    for block_days in (1, 7, 30):
+        yearly_means = block_bootstrap_means(daily_lead, block_days) * 365
+        lead_rows.append(
+            {
+                "ahead": ahead,
+                "behind": behind,
+                "block_days": block_days,
+                "lead_eur_per_year": float(daily_lead.mean() * 365),
+                "low_95": float(np.percentile(yearly_means, 2.5)),
+                "high_95": float(np.percentile(yearly_means, 97.5)),
+                "at_or_below_0_share": float((yearly_means <= 0).mean()),
+            }
+        )
+pl.DataFrame(lead_rows)
+
+# %% [markdown]
+# The plan-then-move schedule's lead of 37,000 EUR a year over the day-ahead model with rest kept cannot be told apart from luck: the 7-day interval runs from -127,000 to 232,000, and it does no better in 32% of resamples. The free day-ahead model leads the rule's week by 308,000 EUR a year (7-day interval 150,000 to 483,000). With rest kept on the day-ahead model, that lead shrinks to 68,000 (-137,000 to 244,000), an interval that includes zero.
 #
 
 # %% [markdown]
@@ -1052,10 +1266,10 @@ pl.DataFrame(
 #
 # Fixing the shifts a week ahead keeps most of the saving. A simple rule sets the week as well as a model does, and the day-ahead model adds most by moving each start a little the day before.
 #
-# 1. Choosing the shift's timing at all is where most of the money is. On 2025, choosing each day the day before saves 4.29 million EUR a year against the standard 06:00 shift, and even last year's profile, with no forecast, saves 3.05 million.
-# 2. A week ahead there is no wind or solar forecast in the data, and the week-ahead model sees only the clock and last week's prices. A rule that reruns last week's cheapest start ties it on the validation years, 88.1% of the possible saving against 86.1% (section 7.2), so the simpler rule sets the week. On 2025 the rule gets 89.0%, 3.98 million EUR a year, and the model 90.7%.
-# 3. The rule holds one start for the whole week. It changes the start on 10 to 20 days a year instead of 100 or more, and it can only break the 11-hour rest rule at a week boundary, which costs at most 69,000 EUR a year to prevent. With rest kept it saves 4.00 million EUR a year on 2025, the same as choosing each day the day before under the same law.
-# 4. The day-ahead model adds most on top of the rule's week: letting it move each start by up to an hour the day before adds 2.0 to 2.7 points on the validation years, beyond the noise, and with rest kept the combination saves 4.13 million EUR a year on 2025 (section 7.4).
+# 1. Choosing the shift's timing at all is where most of the money is. On 2025, choosing each day the day before saves 4.31 million EUR a year against the standard 06:00 shift, and even last year's profile, with no forecast, saves 3.05 million.
+# 2. A week ahead there is no wind or solar forecast in the data, and the week-ahead model sees only the clock and last week's prices. A rule that reruns last week's cheapest start ties it on the validation years, 88.1% of the possible saving against 86.1% (section 7.2), so the simpler rule sets the week. On 2025 the rule gets 89.0%, 3.98 million EUR a year, and the model 87.2%.
+# 3. The rule holds one start for the whole week. It changes the start on 10 to 20 days a year instead of 100 or more, and it can only break the 11-hour rest rule at a week boundary, which costs at most 69,000 EUR a year to prevent. With rest kept it saves 4.00 million EUR a year on 2025, 68,000 less than choosing each day the day before under the same law.
+# 4. The day-ahead model adds most on top of the rule's week: letting it move each start by up to an hour the day before adds 1.8 to 2.6 points on the validation years, beyond the noise, and with rest kept the combination saves 4.11 million EUR a year on 2025 (section 7.4), 37,000 more than choosing each day under the same law, a gap within luck (section 8).
 # 5. What the week-ahead view gives up is the weather. A week-ahead wind and solar forecast is the input most likely to let a model beat the rule a week out, and the model should be tested again with one.
-# 6. Neither model was retuned for these uses; both keep the main notebook's final settings.
+# 6. Neither model was retuned for these uses; both keep the main notebook's final settings, XGBoost alone at depth 3, a learning rate of 0.05 and 200 trees.
 #
