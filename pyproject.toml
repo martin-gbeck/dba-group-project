@@ -2,7 +2,6 @@
 name = "spot-price-forecast"
 version = "0.1.0"
 description = "DBA3803: forecasting the German day-ahead spot price to schedule industrial electricity purchases"
-readme = "project.md"
 authors = [
     { name = "martin-gbeck", email = "martingribsholt@gmail.com" }
 ]

@@ -63,7 +63,7 @@
 # | | |
 # |---|---|
 # | Target | `price_da`, the DE-LU day-ahead clearing price in EUR/MWh, one row per delivery hour |
-# | Predict or explain | Predict. The model is judged on held-out error, and its coefficients are a by-product |
+# | Predict or explain | Predict. The model is judged on held-out error, and what drives the price is a by-product |
 # | Forecast moment | 11:55 German time on D-1, 12 to 36 hours ahead. Nothing published after that may be a feature |
 # | The decision | `shift cost = mean(price_h + premium_h)` over the 8 shift hours, in EUR/MWh. `premium_h` is 10 EUR/MWh (625 EUR of extra staff cost an hour, spread over 62.5 MWh) from 22:00 to 06:00 and in every weekend hour, otherwise 0 |
 # | What an error costs | Only which shift wins changes the purchase. The size of the price differences matters, not only their order: a cheap hour is not worth it if it pulls expensive neighbours into the shift. A forecast 20 EUR/MWh too high in every hour still costs nothing |
@@ -364,7 +364,7 @@ df.null_count().unpivot(variable_name="column", value_name="null_hours").filter(
 )
 
 # %% [markdown]
-# Only the Dutch price has gaps: 24 hours, all of 2026-10-10, most likely not yet published, so refresh before modelling. Nothing else needs fixing. On clock-change days the forecast vector is 23 or 25 long instead of 24, and the one floor hour needs no special handling.
+# Only the Dutch price has gaps: 24 hours, all of 2026-10-10, most likely not yet published when the data was downloaded. Nothing else needs fixing. On clock-change days the forecast vector is 23 or 25 long instead of 24, and the one floor hour needs no special handling.
 #
 
 # %% [markdown]
@@ -447,7 +447,7 @@ miss_last_week = pl.col("price_da").diff(168).abs()
 #
 # - `between_days_sd`: `sd(daily mean)`, how much whole days move up and down, in EUR/MWh. This is the level, which the decision cannot use.
 # - `within_day_sd`: `sd(price - its day's mean)`, how far a typical hour sits from its own day's mean, in EUR/MWh. This is the shape the decision ranks.
-# - `shape_share`: `within² / (within² + between²)`, the shape's share of all price movement. Squared because variances of the two parts add up to the total and SDs do not. At 0.2, 80% of the movement is whole days moving together. The share of the changes that can be attributed to the within day variation
+# - `shape_share`: `within² / (within² + between²)`, the shape's share of all price movement. Squared because variances of the two parts add up to the total and SDs do not. At 0.2, 80% of the movement is whole days moving together.
 #
 
 # %%
