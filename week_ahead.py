@@ -1067,13 +1067,15 @@ pl.DataFrame(
 #
 # Between the two plans, the rule's never loses. With the move, its lead of 1.7 points choosing freely sits inside a larger fold SD of 4.1, and its 1.1 points with rest kept inside 1.3: two ties, which the simpler rule takes. Without the move and with rest kept, it leads by 0.9 points against 0.3. On 2025 the rule's plan with the move saves more than the model's in both settings: 4.08 against 3.99 million choosing freely, 4.11 against 3.92 million with rest kept.
 #
-# So the selection rule picks the decision rule's plan, with the day-ahead model allowed to move each start by up to an hour. With rest kept, as the law requires, that saves 4.11 million EUR a year on 2025, 93.9% of what the best rest-keeping schedule saves, against 4.07 million for choosing each day the day before under the same law.
+# So when the day before may move the start, the selection rule keeps the decision rule's plan, moved by up to an hour by the day-ahead model. With rest kept, as the law requires, that saves 4.11 million EUR a year on 2025, 93.9% of what the best rest-keeping schedule saves, against 4.07 million for choosing each day the day before under the same law and 4.00 million for the rule's week alone.
+#
+# The group report still recommends the rule's week alone. That is a business call, not one the scores make. The move needs the day-ahead model and so a bought day-ahead forecast, while the rule's week needs no model; and the week alone keeps one start for seven days, changing it on 19 days of 2025 instead of 104, so the crew gets a full week's notice. The move's gain of about 104,000 EUR a year over the week alone has to pay for that forecast, and its lead of 37,000 over choosing each day under the rest rule cannot be told apart from luck (section 8).
 #
 
 # %% [markdown]
 # ## 8. Every schedule on one denominator, with the 2026 reserve
 #
-# Sections 5 to 7 score a rest-keeping schedule against the best rest-keeping sequence. The group report divides every schedule by the free daily hindsight instead, so a rest-keeping schedule can never reach 100%. This section scores the schedules the report compares, and the one it leaves out, on both denominators, each year on its own:
+# Sections 5 to 7 score a rest-keeping schedule against the best rest-keeping sequence. The group report divides every schedule by the free daily hindsight instead, so a rest-keeping schedule can never reach 100%. This section scores the schedules the report compares, plus the plan-then-move schedule of section 7.4, which the report does not recommend (see the end of section 7.4), on both denominators, each year on its own:
 #
 # - `daily-xgboost`: the day-ahead model, each day chosen freely (section 4).
 # - `daily-xgboost-rest`: the same with the rest rule kept day by day (section 5).
@@ -1299,7 +1301,7 @@ pl.DataFrame(lead_rows)
 # 1. Choosing the shift's timing at all is where most of the money is. On 2025, choosing each day the day before saves 4.31 million EUR a year against the standard 06:00 shift, and even last year's profile, with no forecast, saves 3.05 million.
 # 2. A week ahead there is no wind or solar forecast in the data, and the week-ahead model sees only the clock and last week's prices. A rule that reruns last week's cheapest start ties it on the validation years, 88.1% of the possible saving against 86.1% (section 7.2), so the simpler rule sets the week. On 2025 the rule gets 89.0%, 3.98 million EUR a year, and the model 87.2%.
 # 3. The rule holds one start for the whole week. It changes the start on 10 to 20 days a year instead of 100 or more, and it can only break the 11-hour rest rule at a week boundary, which costs at most 69,000 EUR a year to prevent. With rest kept it saves 4.00 million EUR a year on 2025, 68,000 less than choosing each day the day before under the same law.
-# 4. The day-ahead model adds most on top of the rule's week: letting it move each start by up to an hour the day before adds 1.8 to 2.6 points on the validation years, beyond the noise, and with rest kept the combination saves 4.11 million EUR a year on 2025 (section 7.4), 37,000 more than choosing each day under the same law, a gap within luck (section 8).
+# 4. The day-ahead model adds most on top of the rule's week: letting it move each start by up to an hour the day before adds 1.8 to 2.6 points on the validation years, beyond the noise, and with rest kept the combination saves 4.11 million EUR a year on 2025 (section 7.4), 37,000 more than choosing each day under the same law, a gap within luck (section 8). The group report still recommends the rule's week alone, since it needs no model or bought forecast and keeps one start all week (19 start changes in 2025 against 104).
 # 5. What the week-ahead view gives up is the weather. A week-ahead wind and solar forecast is the input most likely to let a model beat the rule a week out, and the model should be tested again with one.
 # 6. Neither model was retuned for these uses; both keep the main notebook's final settings, XGBoost alone at depth 3, a learning rate of 0.05 and 200 trees.
 #
